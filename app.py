@@ -10,7 +10,7 @@
 Environment الزامی:  MOTHER_TOKEN  BASE_URL  ADMIN_IDS
 اختیاری: MONGO_URI SECRET_KEY ALLOWED_IDS ADMIN_WEB_KEY
          AI_BASE_URL AI_API_KEY AI_MODEL   (برای روایت متنی؛ نبودشون = فقط تحلیل کدی)
-         TD_API_KEY (Twelve Data، تمیزترین منبع)  DATA_SOURCE=auto|twelve|binance|yahoo  BINANCE_SYMBOL  DATA_SYMBOL (فال‌بک یاهو)
+         OANDA_TOKEN (بهترین منبع) TD_API_KEY (Twelve Data)  DATA_SOURCE=auto|twelve|binance|yahoo  BINANCE_SYMBOL  DATA_SYMBOL (فال‌بک یاهو)
 """
 import os, re, json, time, hmac, hashlib, logging, threading, functools
 from urllib.parse import parse_qsl
@@ -118,17 +118,34 @@ def rate_ok(key, n, window):
 
 # ───────────────────────── دیتای بازار ─────────────────────────
 # زنجیرهٔ منابع (اولی که جواب بده): Twelve Data (اگه کلید باشه) ← Binance XAUUSDT ← Yahoo XAUUSD=X ← Yahoo DATA_SYMBOL
-# DATA_SOURCE=auto|twelve|binance|yahoo   ·   BINANCE_SYMBOL (پیش‌فرض XAUUSDT)
+# DATA_SOURCE=auto|oanda|twelve|yahoo|binance   ·   OANDA_TOKEN + OANDA_ENV=practice|live   ·   BINANCE_SYMBOL (پیش‌فرض XAUUSDT)
 TF_SEC = {"M1": 60, "M5": 300, "M15": 900, "H1": 3600, "H4": 14400, "D1": 86400}
 TF_BIN = {"M1": "1m", "M5": "5m", "M15": "15m", "H1": "1h", "H4": "4h", "D1": "1d"}
 TF_TD = {"M1": "1min", "M5": "5min", "M15": "15min", "H1": "1h", "H4": "4h", "D1": "1day"}
 TF_YH = {"M1": ("1m", "7d"), "M5": ("5m", "30d"), "M15": ("15m", "30d"), "H1": ("60m", "180d"), "D1": ("1d", "3y")}
+OANDA_TOKEN = os.environ.get("OANDA_TOKEN", "").strip()
+OANDA_HOST = "https://api-fxtrade.oanda.com" if os.environ.get("OANDA_ENV", "practice").lower() == "live" else "https://api-fxpractice.oanda.com"
+TF_OA = {"M1": "M1", "M5": "M5", "M15": "M15", "H1": "H1", "H4": "H4", "D1": "D"}
 SRC = os.environ.get("DATA_SOURCE", "auto").lower()
 BIN_SYMBOL = os.environ.get("BINANCE_SYMBOL", "XAUUSDT")
 HTTP = requests.Session()
 HTTP.headers["User-Agent"] = "Mozilla/5.0"
 _cache, _locks, _bad, SRC_USED = {}, {k: threading.Lock() for k in TF_SEC}, {}, {}
 _an_cache = {}
+
+
+def _oanda(tf):
+    """XAU_USD اسپات از OANDA (قیمت mid)؛ همون فید چارت OANDA توی تردینگ‌ویو. توکن دمو/practice رایگانه."""
+    r = HTTP.get(f"{OANDA_HOST}/v3/instruments/XAU_USD/candles", params={"granularity": TF_OA[tf], "count": 2500, "price": "M"},
+                 headers={"Authorization": "Bearer " + OANDA_TOKEN}, timeout=10)
+    if r.status_code >= 400:
+        raise RuntimeError(f"OANDA {r.status_code}: {r.text[:120]}")
+    out = []
+    for k in r.json()["candles"]:
+        m = k["mid"]
+        dt = datetime.strptime(k["time"][:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        out.append({"t": int(dt.timestamp()), "o": float(m["o"]), "h": float(m["h"]), "l": float(m["l"]), "c": float(m["c"])})
+    return out
 
 
 def _binance(tf):
@@ -191,13 +208,18 @@ def clean(c):
 
 
 def _chain():
+    """ترتیب کیفیت: OANDA ← Twelve Data ← Yahoo اسپات ← Binance (پرپچوال کم‌عمق، شدوی M1 ضعیف) ← Yahoo فیوچرز."""
     ch = []
+    if OANDA_TOKEN and SRC in ("auto", "oanda"):
+        ch.append(("oanda", _oanda))
     if TD_KEY and SRC in ("auto", "twelve"):
         ch.append(("twelve", _twelve))
+    if SRC in ("auto", "yahoo"):
+        ch.append(("yahoo-spot", lambda tf: _yahoo(tf, "XAUUSD=X")))
     if SRC in ("auto", "binance"):
         ch.append(("binance", _binance))
     if SRC in ("auto", "yahoo"):
-        ch += [("yahoo-spot", lambda tf: _yahoo(tf, "XAUUSD=X")), ("yahoo-fut", lambda tf: _yahoo(tf, SYMBOL))]
+        ch.append(("yahoo-fut", lambda tf: _yahoo(tf, SYMBOL)))
     return ch
 
 
@@ -219,7 +241,7 @@ def _fetch(tf):
 
 def candles(tf):
     """لیست کندل‌ها (آخری ممکنه در حال تشکیل باشه). کش کوتاه + قفل برای هر تایم‌فریم تا درخواست‌های هم‌زمان یکی بشن."""
-    ttl = 20 if SRC_USED.get(tf) == "twelve" else 3
+    ttl = {"twelve": 20, "oanda": 1}.get(SRC_USED.get(tf), 3)
     hit = _cache.get(tf)
     if hit and time.time() - hit[0] < ttl:
         return hit[1]
@@ -330,7 +352,7 @@ def api_candles(uid):
     except Exception as e:
         return jsonify(error="خطا در دریافت دیتا: " + str(e)[:150]), 502
     since = request.args.get("since", type=int)
-    c = [x for x in c if x["t"] >= since] if since else c[-min(request.args.get("limit", 1500, type=int), 1500):]
+    c = [x for x in c if x["t"] >= since] if since else c[-min(request.args.get("limit", 1500, type=int), 3000):]
     return jsonify(tf=tf, src=SRC_USED.get(tf), c=[[x["t"], x["o"], x["h"], x["l"], x["c"]] for x in c])
 
 
