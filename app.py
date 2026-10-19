@@ -38,7 +38,6 @@ AI_BASE_URL = re.sub(r"/chat/completions/?$", "", os.environ.get("AI_BASE_URL", 
 AI_API_KEY, AI_MODEL = os.environ.get("AI_API_KEY", ""), os.environ.get("AI_MODEL", "")
 AI_ON = bool(AI_BASE_URL and AI_API_KEY and AI_MODEL)
 TD_KEY = os.environ.get("TD_API_KEY", "").strip()
-TD_TTL = int(os.environ.get("TD_TTL", "20"))
 SYMBOL = os.environ.get("DATA_SYMBOL", "GC=F")
 WEBHOOK_SECRET = hashlib.sha256(("gs" + SECRET_KEY).encode()).hexdigest()[:32]
 
@@ -153,101 +152,63 @@ def _oanda(tf):
 
 NY = ZoneInfo("America/New_York")
 DUKA = "https://datafeed.dukascopy.com/datafeed/XAUUSD"
-_bi5c, _yh = {}, {}
-# تایم‌فریم ← تعداد روز (بدون شنبه) از کندل M1 ساخته می‌شه؛ همه‌ی تایم‌فریم‌ها از یه پایه‌ی M1 می‌آن و فایل‌ها بینشون کش مشترکه
-DUKA_DAYS = {"M1": 2, "M5": 5, "M15": 10, "H1": 20, "H4": 40, "D1": 90}
+_bi5c = {}
+# تایم‌فریم ← (کندل پایه، دامنه‌ی دریافت: تعداد روز برای M1 / تعداد ماه برای H1)
+DUKA_SPEC = {"M1": ("M1", 2), "M5": ("M1", 6), "M15": ("M1", 14), "H1": ("H1", 3), "H4": ("H1", 6), "D1": ("H1", 12)}
 
 
-def _p_candles(raw, ts):
-    """رکورد ۲۴ بایتی: ثانیه، open، close، low، high، حجم"""
-    return [{"t": ts + s, "o": o / 1000, "h": h / 1000, "l": l / 1000, "c": c / 1000}
-            for s, o, c, l, h, _v in struct.iter_unpack(">IIIIIf", raw[:len(raw) // 24 * 24]) if o and h and l and c]
-
-
-def _p_ticks(raw, ts):
-    """رکورد ۲۰ بایتی تیک: ms، ask، bid، حجم‌ها ← کندل M1 از قیمت bid"""
-    m = {}
-    for ms, _ask, bid, _a, _b in struct.iter_unpack(">IIIff", raw[:len(raw) // 20 * 20]):
-        if not bid:
-            continue
-        k, pr = ms // 60000, bid / 1000
-        r = m.get(k)
-        if r is None:
-            m[k] = [pr, pr, pr, pr]
-        else:
-            r[1], r[2], r[3] = max(r[1], pr), min(r[2], pr), pr
-    return [{"t": ts + k * 60, "o": v[0], "h": v[1], "l": v[2], "c": v[3]} for k, v in sorted(m.items())]
-
-
-def _dl(path, parse, ts, cur):
-    """دانلود تحمل‌خطا: ۴۰۴/۵۰۳/هر خطا = فایل خالی (کل منبع نمی‌افته). گذشته ۶ ساعت کش، ساعت/روز جاری ۲۰ ثانیه."""
+def _bi5(path, base_ts, cur):
+    """فایل کندل Dukascopy (LZMA، رکورد ۲۴ بایتی: زمان، open، close، low، high، حجم). فایل‌های گذشته مدت طولانی کش می‌شن."""
     hit = _bi5c.get(path)
-    if hit and time.time() - hit[0] < hit[2]:
+    if hit and time.time() - hit[0] < (20 if cur else 21600):
         return hit[1]
-    rows, ttl = [], 20
-    try:
-        for attempt in (0, 1):
-            r = HTTP.get(f"{DUKA}/{path}", timeout=12)
-            if r.status_code == 503 and attempt == 0:
-                time.sleep(.5)
-                continue
-            break
-        if r.status_code == 404:
-            ttl = 20 if cur else 21600
-        elif r.status_code < 400:
-            if r.content:
-                rows = parse(lzma.decompress(r.content), ts)
-            ttl = 20 if cur else 21600
-        else:
-            log.info("dukascopy %s -> %s", path, r.status_code)
-    except Exception as e:
-        log.info("dukascopy %s: %s", path, str(e)[:100])
-    _bi5c[path] = (time.time(), rows, ttl)
+    r = HTTP.get(f"{DUKA}/{path}", timeout=12)
+    rows = []
+    if r.status_code != 404:
+        r.raise_for_status()
+        if r.content:
+            raw = lzma.decompress(r.content)
+            for s, o, c, l, h, _v in struct.iter_unpack(">IIIIIf", raw[:len(raw) // 24 * 24]):
+                if o and h and l and c:
+                    rows.append({"t": base_ts + s, "o": o / 1000, "h": h / 1000, "l": l / 1000, "c": c / 1000})
+    _bi5c[path] = (time.time(), rows)
     return rows
 
 
-def _duka_base(days):
-    now_d, jobs, d, n = datetime.now(timezone.utc), [], datetime.now(timezone.utc), 0
-    today = now_d.date()
-    while n < days:
-        if d.weekday() != 5:                                        # شنبه بازار بسته‌ست
-            n += 1
-            ds = int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
-            if d.date() >= today - timedelta(days=1):                # دیروز/امروز: فایل روزانه هنوز آماده نیست ← تیک ساعتی
-                for h in range(24 if d.date() < today else now_d.hour + 1):
-                    jobs.append((f"{d.year}/{d.month - 1:02d}/{d.day:02d}/{h:02d}h_ticks.bi5", _p_ticks, ds + h * 3600, d.date() == today and h == now_d.hour))
-            else:
-                jobs.append((f"{d.year}/{d.month - 1:02d}/{d.day:02d}/BID_candles_min_1.bi5", _p_candles, ds, False))
-        d -= timedelta(days=1)
-    with ThreadPoolExecutor(6) as ex:
-        return [x for rows in ex.map(lambda j: _dl(*j), jobs) for x in rows]
+def _duka_base(base, span):
+    now_d, jobs = datetime.now(timezone.utc), []
+    if base == "M1":
+        d, n = now_d, 0
+        while n < span:
+            if d.weekday() != 5:                                   # شنبه بازار بسته‌ست
+                ts = int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
+                jobs.append((f"{d.year}/{d.month - 1:02d}/{d.day:02d}/BID_candles_min_1.bi5", ts, d.date() == now_d.date()))
+                n += 1
+            d -= timedelta(days=1)
+    else:
+        y, m = now_d.year, now_d.month
+        for i in range(span):
+            ts = int(datetime(y, m, 1, tzinfo=timezone.utc).timestamp())
+            jobs.append((f"{y}/{m - 1:02d}/BID_candles_hour_1.bi5", ts, i == 0))
+            y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    with ThreadPoolExecutor(8) as ex:
+        return [x for rows in ex.map(lambda j: _bi5(*j), jobs) for x in rows]
 
 
-def _yh_tail(sym):
-    hit = _yh.get(sym)
-    if hit and time.time() - hit[0] < 5:
-        return hit[1]
-    try:
-        v = _yahoo("M1", sym)
-    except Exception as e:
-        log.info("yahoo tail %s: %s", sym, str(e)[:100])
-        v = []
-    _yh[sym] = (time.time(), v)
-    return v
-
-
-def _stitch(B):
-    """فایل Dukascopy همیشه کمی عقبه (تا آخرین ساعت کامل). دنباله‌ی M1 رو از یاهو (اسپات، وگرنه فیوچرز) می‌چسبونیم و جوش رو روی آخرین کلوز تراز می‌کنیم."""
-    if not B or B[-1]["t"] >= time.time() - 180:
+def _stitch(B, base):
+    """اگه فایل Dukascopy عقب بود (ساعت/روز جاری)، دنباله رو از Yahoo اسپات می‌چسبونیم و جوش رو تراز می‌کنیم."""
+    if not B or B[-1]["t"] >= time.time() - 3 * TF_SEC[base]:
         return B
-    for sym in ("XAUUSD=X", SYMBOL):
-        Y = _yh_tail(sym)
-        tail = [y for y in Y if y["t"] > B[-1]["t"]]
-        if tail:
-            ref = next((y for y in Y if y["t"] == B[-1]["t"]), None)
-            sh = B[-1]["c"] - (ref["c"] if ref else tail[0]["o"])
-            return B + [{"t": y["t"], "o": y["o"] + sh, "h": y["h"] + sh, "l": y["l"] + sh, "c": y["c"] + sh} for y in tail]
-    return B
+    try:
+        Y = _yahoo(base, "XAUUSD=X")
+    except Exception:
+        return B
+    tail = [y for y in Y if y["t"] > B[-1]["t"]]
+    if not tail:
+        return B
+    ref = next((y for y in Y if y["t"] == B[-1]["t"]), None)
+    sh = B[-1]["c"] - (ref["c"] if ref else tail[0]["o"])
+    return B + [{"t": y["t"], "o": y["o"] + sh, "h": y["h"] + sh, "l": y["l"] + sh, "c": y["c"] + sh} for y in tail]
 
 
 def _ny_resample(c, step):
@@ -265,10 +226,11 @@ def _ny_resample(c, step):
 
 
 def _duka(tf):
-    B = clean(_stitch(sorted(_duka_base(DUKA_DAYS[tf]), key=lambda x: x["t"])))
-    if tf == "M1":
+    base, span = DUKA_SPEC[tf]
+    B = clean(_stitch(sorted(_duka_base(base, span), key=lambda x: x["t"]), base))
+    if tf == base:
         return B
-    return _resample(B, TF_SEC[tf]) if tf in ("M5", "M15", "H1") else _ny_resample(B, TF_SEC[tf])
+    return _resample(B, TF_SEC[tf]) if tf in ("M5", "M15") else _ny_resample(B, TF_SEC[tf])
 
 
 def _binance(tf):
@@ -284,11 +246,8 @@ def _binance(tf):
     raise err
 
 
-_td = {}
-
-
-def _td_get(tf, n):
-    r = HTTP.get("https://api.twelvedata.com/time_series", params={"symbol": "XAU/USD", "interval": TF_TD[tf], "outputsize": n,
+def _twelve(tf):
+    r = HTTP.get("https://api.twelvedata.com/time_series", params={"symbol": "XAU/USD", "interval": TF_TD[tf], "outputsize": 1500,
                                                                    "apikey": TD_KEY, "timezone": "UTC"}, timeout=15)
     v = r.json().get("values")
     if not v:
@@ -297,20 +256,6 @@ def _td_get(tf, n):
     for x in reversed(v):
         dt = datetime.strptime(x["datetime"][:19], "%Y-%m-%d %H:%M:%S" if len(x["datetime"]) > 10 else "%Y-%m-%d")
         out.append({"t": int(dt.replace(tzinfo=timezone.utc).timestamp()), "o": float(x["open"]), "h": float(x["high"]), "l": float(x["low"]), "c": float(x["close"])})
-    return out
-
-
-def _twelve(tf):
-    """هر درخواست ۱ کردیت می‌خوره (رایگان: ۸ در دقیقه / ۸۰۰ در روز). پس تاریخچه هر ۱۵ دقیقه یک‌بار؛ بین‌اش فقط ۳ کندل آخر."""
-    st = _td.get(tf)
-    if st and time.time() - st[0] < 900:
-        d = {x["t"]: x for x in st[1]}
-        d.update({x["t"]: x for x in _td_get(tf, 3)})
-        out = [d[k] for k in sorted(d)][-2500:]
-        _td[tf] = (st[0], out)
-    else:
-        out = _td_get(tf, 2000)
-        _td[tf] = (time.time(), out)
     return out
 
 
@@ -354,7 +299,7 @@ def _chain():
         ch.append(("oanda", _oanda))
     if TD_KEY and SRC in ("auto", "twelve"):
         ch.append(("twelve", _twelve))
-    if SRC == "dukascopy":                      # از IP بعضی هاست‌ها (مثل Render) ۵۰۳ می‌ده؛ فقط با DATA_SOURCE=dukascopy
+    if SRC in ("auto", "dukascopy"):
         ch.append(("dukascopy", _duka))
     if SRC in ("auto", "yahoo"):
         ch.append(("yahoo-spot", lambda tf: _yahoo(tf, "XAUUSD=X")))
@@ -383,7 +328,7 @@ def _fetch(tf):
 
 def candles(tf):
     """لیست کندل‌ها (آخری ممکنه در حال تشکیل باشه). کش کوتاه + قفل برای هر تایم‌فریم تا درخواست‌های هم‌زمان یکی بشن."""
-    ttl = {"twelve": TD_TTL, "oanda": 1}.get(SRC_USED.get(tf)) or ((4 if tf in ("M1", "M5") else 10 if tf in ("M15", "H1") else 40) if SRC_USED.get(tf) == "dukascopy" else 3)
+    ttl = {"twelve": 20, "oanda": 1, "dukascopy": 4}.get(SRC_USED.get(tf), 3)
     hit = _cache.get(tf)
     if hit and time.time() - hit[0] < ttl:
         return hit[1]
@@ -479,28 +424,6 @@ def api_me(uid):
              "grade": (a["res"]["setups"] or [{}])[0].get("grade"), "bias": a["res"]["bias"]}
             for a in db.analyses.find({"uid": uid}).sort("t", -1).limit(12)]
     return jsonify(name=g.user.get("first_name", ""), mode=u.get("mode", "scalp"), history=hist, ai=AI_ON)
-
-
-def diag_text(tf="M5"):
-    L = [f"منبع‌ها برای {tf}:"]
-    for name, fn in _chain():
-        t = time.time()
-        try:
-            c = clean(fn(tf))
-            flat = sum(1 for x in c[-200:] if x["h"] == x["l"])
-            L.append(f"✅ {name}: {len(c)} کندل · آخرین {datetime.fromtimestamp(c[-1]['t'], timezone.utc):%m-%d %H:%M} · {c[-1]['c']} · کندل بدون شدو در ۲۰۰ تای آخر: {flat} · {int((time.time() - t) * 1000)}ms")
-        except Exception as e:
-            L.append(f"❌ {name}: {str(e)[:160]}")
-    L.append(f"کلید Twelve Data: {'هست' if TD_KEY else 'نیست'}")
-    return "\n".join(L)
-
-
-@app.get("/api/diag")
-def api_diag():
-    k = request.args.get("key", "")
-    if not (ADMIN_WEB_KEY and hmac.compare_digest(k.encode(), ADMIN_WEB_KEY.encode())):
-        return "forbidden", 403
-    return diag_text(request.args.get("tf", "M5") if request.args.get("tf") in TF_SEC else "M5"), 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
 @app.get("/api/candles")
@@ -604,9 +527,6 @@ def handle_msg(msg):
                   text="سلام! من تحلیلگر ساختار بازار طلا هستم.\nساختار، OB، FVG و لیکوییدیتی رو با کد تشخیص می‌دم، نه با حدس مدل.\n\n/fast — اسکالپ سریع (H1 ← M5 ← M1)\n/gold — اسکالپ (H4 ← H1 ← M15)\n/swing — تحلیل سوئینگ (D1 ← H4 ← H1)")
     if msg.get("photo"):
         return tg("sendMessage", chat_id=uid, text="عکس چارت دقیق خونده نمی‌شه؛ من خودم دیتای کندل رو می‌گیرم و دقیق‌تر تحلیل می‌کنم. /gold رو بزن.")
-    if text.startswith("/diag") and uid in ADMIN_IDS:
-        arg = text.split()[1].upper() if len(text.split()) > 1 else "M5"
-        return tg("sendMessage", chat_id=uid, text=diag_text(arg if arg in TF_SEC else "M5"))
     mode = "swing" if text.startswith("/swing") else "fast" if text.startswith("/fast") else "scalp" if text.startswith(("/gold", "/scalp")) else None
     if not mode:
         return
@@ -652,17 +572,6 @@ def setup_bot():
 
 
 setup_bot()
-
-
-def _warm():                                    # پیش‌گرم کردن کش: اولین باز شدن مینی‌اپ منتظر دانلود فایل‌ها نمی‌مونه
-    for tf in ("M15", "H1", "M5", "M1", "H4", "D1"):
-        try:
-            candles(tf)
-        except Exception as e:
-            log.warning("warm %s: %s", tf, str(e)[:120])
-
-
-threading.Thread(target=_warm, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threaded=True)
