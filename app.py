@@ -38,6 +38,7 @@ AI_BASE_URL = re.sub(r"/chat/completions/?$", "", os.environ.get("AI_BASE_URL", 
 AI_API_KEY, AI_MODEL = os.environ.get("AI_API_KEY", ""), os.environ.get("AI_MODEL", "")
 AI_ON = bool(AI_BASE_URL and AI_API_KEY and AI_MODEL)
 TD_KEY = os.environ.get("TD_API_KEY", "").strip()
+TD_TTL = int(os.environ.get("TD_TTL", "20"))
 SYMBOL = os.environ.get("DATA_SYMBOL", "GC=F")
 WEBHOOK_SECRET = hashlib.sha256(("gs" + SECRET_KEY).encode()).hexdigest()[:32]
 
@@ -283,8 +284,11 @@ def _binance(tf):
     raise err
 
 
-def _twelve(tf):
-    r = HTTP.get("https://api.twelvedata.com/time_series", params={"symbol": "XAU/USD", "interval": TF_TD[tf], "outputsize": 1500,
+_td = {}
+
+
+def _td_get(tf, n):
+    r = HTTP.get("https://api.twelvedata.com/time_series", params={"symbol": "XAU/USD", "interval": TF_TD[tf], "outputsize": n,
                                                                    "apikey": TD_KEY, "timezone": "UTC"}, timeout=15)
     v = r.json().get("values")
     if not v:
@@ -293,6 +297,20 @@ def _twelve(tf):
     for x in reversed(v):
         dt = datetime.strptime(x["datetime"][:19], "%Y-%m-%d %H:%M:%S" if len(x["datetime"]) > 10 else "%Y-%m-%d")
         out.append({"t": int(dt.replace(tzinfo=timezone.utc).timestamp()), "o": float(x["open"]), "h": float(x["high"]), "l": float(x["low"]), "c": float(x["close"])})
+    return out
+
+
+def _twelve(tf):
+    """هر درخواست ۱ کردیت می‌خوره (رایگان: ۸ در دقیقه / ۸۰۰ در روز). پس تاریخچه هر ۱۵ دقیقه یک‌بار؛ بین‌اش فقط ۳ کندل آخر."""
+    st = _td.get(tf)
+    if st and time.time() - st[0] < 900:
+        d = {x["t"]: x for x in st[1]}
+        d.update({x["t"]: x for x in _td_get(tf, 3)})
+        out = [d[k] for k in sorted(d)][-2500:]
+        _td[tf] = (st[0], out)
+    else:
+        out = _td_get(tf, 2000)
+        _td[tf] = (time.time(), out)
     return out
 
 
@@ -336,7 +354,7 @@ def _chain():
         ch.append(("oanda", _oanda))
     if TD_KEY and SRC in ("auto", "twelve"):
         ch.append(("twelve", _twelve))
-    if SRC in ("auto", "dukascopy"):
+    if SRC == "dukascopy":                      # از IP بعضی هاست‌ها (مثل Render) ۵۰۳ می‌ده؛ فقط با DATA_SOURCE=dukascopy
         ch.append(("dukascopy", _duka))
     if SRC in ("auto", "yahoo"):
         ch.append(("yahoo-spot", lambda tf: _yahoo(tf, "XAUUSD=X")))
@@ -365,7 +383,7 @@ def _fetch(tf):
 
 def candles(tf):
     """لیست کندل‌ها (آخری ممکنه در حال تشکیل باشه). کش کوتاه + قفل برای هر تایم‌فریم تا درخواست‌های هم‌زمان یکی بشن."""
-    ttl = {"twelve": 20, "oanda": 1}.get(SRC_USED.get(tf)) or ((4 if tf in ("M1", "M5") else 10 if tf in ("M15", "H1") else 40) if SRC_USED.get(tf) == "dukascopy" else 3)
+    ttl = {"twelve": TD_TTL, "oanda": 1}.get(SRC_USED.get(tf)) or ((4 if tf in ("M1", "M5") else 10 if tf in ("M15", "H1") else 40) if SRC_USED.get(tf) == "dukascopy" else 3)
     hit = _cache.get(tf)
     if hit and time.time() - hit[0] < ttl:
         return hit[1]
@@ -461,6 +479,28 @@ def api_me(uid):
              "grade": (a["res"]["setups"] or [{}])[0].get("grade"), "bias": a["res"]["bias"]}
             for a in db.analyses.find({"uid": uid}).sort("t", -1).limit(12)]
     return jsonify(name=g.user.get("first_name", ""), mode=u.get("mode", "scalp"), history=hist, ai=AI_ON)
+
+
+def diag_text(tf="M5"):
+    L = [f"منبع‌ها برای {tf}:"]
+    for name, fn in _chain():
+        t = time.time()
+        try:
+            c = clean(fn(tf))
+            flat = sum(1 for x in c[-200:] if x["h"] == x["l"])
+            L.append(f"✅ {name}: {len(c)} کندل · آخرین {datetime.fromtimestamp(c[-1]['t'], timezone.utc):%m-%d %H:%M} · {c[-1]['c']} · کندل بدون شدو در ۲۰۰ تای آخر: {flat} · {int((time.time() - t) * 1000)}ms")
+        except Exception as e:
+            L.append(f"❌ {name}: {str(e)[:160]}")
+    L.append(f"کلید Twelve Data: {'هست' if TD_KEY else 'نیست'}")
+    return "\n".join(L)
+
+
+@app.get("/api/diag")
+def api_diag():
+    k = request.args.get("key", "")
+    if not (ADMIN_WEB_KEY and hmac.compare_digest(k.encode(), ADMIN_WEB_KEY.encode())):
+        return "forbidden", 403
+    return diag_text(request.args.get("tf", "M5") if request.args.get("tf") in TF_SEC else "M5"), 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
 @app.get("/api/candles")
@@ -564,6 +604,9 @@ def handle_msg(msg):
                   text="سلام! من تحلیلگر ساختار بازار طلا هستم.\nساختار، OB، FVG و لیکوییدیتی رو با کد تشخیص می‌دم، نه با حدس مدل.\n\n/fast — اسکالپ سریع (H1 ← M5 ← M1)\n/gold — اسکالپ (H4 ← H1 ← M15)\n/swing — تحلیل سوئینگ (D1 ← H4 ← H1)")
     if msg.get("photo"):
         return tg("sendMessage", chat_id=uid, text="عکس چارت دقیق خونده نمی‌شه؛ من خودم دیتای کندل رو می‌گیرم و دقیق‌تر تحلیل می‌کنم. /gold رو بزن.")
+    if text.startswith("/diag") and uid in ADMIN_IDS:
+        arg = text.split()[1].upper() if len(text.split()) > 1 else "M5"
+        return tg("sendMessage", chat_id=uid, text=diag_text(arg if arg in TF_SEC else "M5"))
     mode = "swing" if text.startswith("/swing") else "fast" if text.startswith("/fast") else "scalp" if text.startswith(("/gold", "/scalp")) else None
     if not mode:
         return
