@@ -162,7 +162,7 @@ def _bi5(path, base_ts, cur):
     hit = _bi5c.get(path)
     if hit and time.time() - hit[0] < (20 if cur else 21600):
         return hit[1]
-    r = HTTP.get(f"{DUKA}/{path}", timeout=12)
+    r = HTTP.get(f"{DUKA}/{path}", timeout=30)
     rows = []
     if r.status_code != 404:
         r.raise_for_status()
