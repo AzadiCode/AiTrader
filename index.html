@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>تحلیل طلا</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#0e1013;--card:#161a1f;--line:#252b33;--tx:#e8eaed;--mut:#8b949e;--gold:#d4af37;--up:#3ecf8e;--dn:#ef5b5b;--bl:#5b9cf5}
+*{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--tx);font:14px/1.7 system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;padding:14px 14px 40px;max-width:560px;margin:auto}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+h1{font-size:15px;font-weight:600;color:var(--gold);letter-spacing:.3px}
+.price{font:600 26px/1.2 ui-monospace,Menlo,monospace;direction:ltr;text-align:right}
+.chip{display:inline-block;padding:1px 10px;border-radius:99px;font-size:12px;border:1px solid var(--line);color:var(--mut)}
+.chip.up{color:var(--up);border-color:#1f5a41}.chip.dn{color:var(--dn);border-color:#6a2b2b}
+.seg{display:flex;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:3px;margin:12px 0}
+.seg button{flex:1;background:none;border:0;color:var(--mut);padding:6px;border-radius:8px;font:inherit;cursor:pointer}
+.seg button.on{background:#222831;color:var(--tx)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px}
+.card h2{font-size:12px;font-weight:500;color:var(--mut);margin-bottom:8px}
+canvas{width:100%;height:300px;display:block}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--mut);margin-top:6px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-left:4px;vertical-align:-1px}
+.setup{border-top:1px solid var(--line);padding:10px 0}.setup:first-of-type{border:0;padding-top:0}
+.row{display:flex;align-items:center;gap:8px}
+.grade{font-weight:700;padding:0 8px;border-radius:6px;background:#2a2410;color:var(--gold)}
+.grade.c{background:#222;color:var(--mut)}
+.nums{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:8px 0;direction:ltr;text-align:center;font:12px ui-monospace,Menlo,monospace}
+.nums div{background:#11151a;border-radius:8px;padding:4px 0}.nums small{display:block;color:var(--mut);font-size:10px}
+.why{font-size:12px;color:var(--mut)}
+button.main{width:100%;background:var(--gold);color:#1a1500;border:0;border-radius:12px;padding:11px;font-weight:600;font-size:14px;font-family:inherit;cursor:pointer}
+button.main:disabled{opacity:.5}
+.ai{white-space:pre-wrap;font-size:13px}
+.err{color:var(--dn);font-size:12px;margin:6px 0}
+.hist{display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line);font-size:12px;color:var(--mut);cursor:pointer}
+.hist:first-of-type{border:0}
+.foot{text-align:center;font-size:11px;color:var(--mut);margin-top:18px}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>XAUUSD · تحلیل ساختار</h1><span id="bias" class="chip">…</span> <span id="kz" class="chip" hidden></span></div>
+  <div class="price" id="price">—</div>
+</header>
+
+<div class="seg" id="mode"><button data-m="scalp" class="on">اسکالپ · H4→H1→M15</button><button data-m="swing">سوئینگ · D1→H4→H1</button></div>
+<div class="seg" id="tabs"></div>
+
+<div class="card">
+  <canvas id="cv"></canvas>
+  <div class="legend">
+    <span><i style="background:#3ecf8e88"></i>OB صعودی</span><span><i style="background:#ef5b5b88"></i>OB نزولی</span>
+    <span><i style="background:#5b9cf555"></i>FVG</span><span><i style="background:#d4af37"></i>لیکوییدیتی / تعادل</span>
+  </div>
+</div>
+
+<div class="card"><h2>بهترین ستاپ‌ها (امتیاز کانفلوئنس)</h2><div id="setups"></div></div>
+
+<div class="card"><h2>روایت تحلیل</h2><div id="ai" class="ai" style="color:var(--mut)">—</div>
+  <button class="main" id="aiBtn" style="margin-top:10px" hidden>تولید روایت با هوش مصنوعی</button></div>
+
+<button class="main" id="go">تحلیل جدید</button>
+<div id="err" class="err"></div>
+
+<div class="card" style="margin-top:14px"><h2>تحلیل‌های قبلی</h2><div id="hist"></div></div>
+<div class="foot">تشخیص‌ها الگوریتمی‌ان و ممکنه چند پیپ با چارت بروکر تو فرق کنن.<br>آموزشی است؛ توصیه‌ی معاملاتی نیست.</div>
+
+<script>
+const tg = window.Telegram && Telegram.WebApp; if (tg) { tg.ready(); tg.expand(); }
+const $ = s => document.querySelector(s);
+const KEY = new URLSearchParams(location.search).get("key") || "";
+const H = () => ({"Content-Type":"application/json","X-Init-Data":tg ? tg.initData : "","X-Admin-Key":KEY});
+async function api(p, m="GET", b) {
+  const r = await fetch("/api/"+p, {method:m, headers:H(), body:b ? JSON.stringify(b) : undefined});
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.status); return j;
+}
+let mode = "scalp", cur = null, tf = null, aid = null, aiOn = false;
+
+function setMode(m) { mode = m; document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === m)); }
+$("#mode").onclick = e => { if (e.target.dataset.m) { setMode(e.target.dataset.m); run(); } };
+$("#tabs").onclick = e => { if (e.target.dataset.t) { tf = e.target.dataset.t; tabs(); draw(); } };
+$("#go").onclick = run; $("#aiBtn").onclick = narrate;
+
+function tabs() {
+  $("#tabs").innerHTML = cur.tfs.map((t, i) => `<button data-t="${t}" class="${t === tf ? "on" : ""}">${t} ${["بایاس","ناحیه","ورود"][i]}</button>`).join("");
+}
+function render(res, id, ai) {
+  cur = res; aid = id; setMode(res.mode); if (!res.tfs.includes(tf)) tf = res.tfs[2];
+  $("#price").textContent = res.price.toFixed(2);
+  const b = $("#bias"); b.className = "chip " + (res.bias > 0 ? "up" : res.bias < 0 ? "dn" : "");
+  b.textContent = (res.bias > 0 ? "صعودی" : res.bias < 0 ? "نزولی" : "نامشخص") + " · " + res.tfs[0];
+  $("#kz").hidden = !res.kz; $("#kz").textContent = "کیلزون " + (res.kz || "");
+  tabs(); draw();
+  $("#setups").innerHTML = res.setups.length ? res.setups.map(s => `<div class="setup">
+    <div class="row"><span class="grade ${s.grade === "C" ? "c" : ""}">${s.grade}</span><b style="color:var(--${s.d > 0 ? "up" : "dn"})">${s.d > 0 ? "خرید" : "فروش"}</b>
+    <span style="color:var(--mut);font-size:12px">OB ${s.tf} · ${s.lo}–${s.hi}${s.inzone ? " · داخل ناحیه" : ""}</span></div>
+    <div class="nums"><div><small>ENTRY</small>${s.entry}</div><div><small>SL</small>${s.sl}</div><div><small>TP</small>${s.tp ?? "—"}</div><div><small>RR</small>${s.rr ?? "—"}</div></div>
+    <div class="why">${s.why.join(" · ") || "—"}</div></div>`).join("") : '<div class="why">ستاپ معتبری الان نیست.</div>';
+  $("#ai").textContent = ai || "—"; $("#ai").style.color = ai ? "var(--tx)" : "var(--mut)";
+  $("#aiBtn").hidden = !aiOn || !!ai;
+}
+function draw() {
+  const ch = cur.charts[tf], cv = $("#cv"), dpr = devicePixelRatio || 1;
+  const W = cv.clientWidth, Hh = cv.clientHeight; cv.width = W * dpr; cv.height = Hh * dpr;
+  const x = cv.getContext("2d"); x.scale(dpr, dpr); x.clearRect(0, 0, W, Hh);
+  const c = ch.c, n = c.length, padR = 52, padT = 8, padB = 8, cw = (W - padR) / n;
+  let hi = Math.max(...c.map(k => k[2])), lo = Math.min(...c.map(k => k[3]));
+  const m = (hi - lo) * .06; hi += m; lo -= m;
+  const Y = p => padT + (hi - p) / (hi - lo) * (Hh - padT - padB), X = i => i * cw + cw / 2;
+  x.font = "10px ui-monospace,monospace"; x.textBaseline = "middle";
+  x.strokeStyle = "#1d2229"; x.fillStyle = "#6b7480"; x.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) { const p = lo + (hi - lo) * i / 4, y = Y(p); x.beginPath(); x.moveTo(0, y); x.lineTo(W - padR, y); x.stroke(); x.fillText(p.toFixed(1), W - padR + 4, y); }
+  const zone = (i, a, b, col) => { x.fillStyle = col; x.fillRect(X(i), Y(b), W - padR - X(i), Y(a) - Y(b)); };
+  ch.fvg.forEach(g => zone(g.i, g.lo, g.hi, "#5b9cf533"));
+  ch.ob.forEach(o => { zone(o.i, o.lo, o.hi, o.d > 0 ? "#3ecf8e40" : "#ef5b5b40"); x.fillStyle = o.d > 0 ? "#3ecf8e" : "#ef5b5b"; x.fillText("OB" + (o.st === "tested" ? " ·T" : ""), X(o.i) + 2, Y(o.hi) - 6); });
+  x.setLineDash([4, 4]); x.lineWidth = 1;
+  const line = (p, col, label, from = 0) => { x.strokeStyle = col; x.fillStyle = col; x.beginPath(); x.moveTo(X(from), Y(p)); x.lineTo(W - padR, Y(p)); x.stroke(); if (label) x.fillText(label, X(from) + 2, Y(p) - 6); };
+  ch.liq.forEach(l => line(l.p, "#d4af37", (l.k === "H" ? "EQH" : "EQL") + (l.st === "swept" ? " ✕" : ""), l.i));
+  if (ch.pd) line(ch.pd.eq, "#8b949e", "EQ");
+  ch.ev.forEach(e => { if (e.lvl >= lo && e.lvl <= hi) { x.strokeStyle = x.fillStyle = e.d > 0 ? "#3ecf8e" : "#ef5b5b"; x.beginPath(); x.moveTo(X(Math.max(0, e.a)), Y(e.lvl)); x.lineTo(X(e.b), Y(e.lvl)); x.stroke(); x.fillText(e.t, X((Math.max(0, e.a) + e.b) / 2) - 10, Y(e.lvl) + (e.d > 0 ? -7 : 8)); } });
+  x.setLineDash([]);
+  c.forEach((k, i) => {
+    const up = k[4] >= k[1], col = up ? "#3ecf8e" : "#ef5b5b"; x.strokeStyle = x.fillStyle = col;
+    x.beginPath(); x.moveTo(X(i), Y(k[2])); x.lineTo(X(i), Y(k[3])); x.stroke();
+    x.fillRect(X(i) - cw * .32, Math.min(Y(k[1]), Y(k[4])), cw * .64, Math.max(1, Math.abs(Y(k[1]) - Y(k[4]))));
+  });
+  const last = c[n - 1][4]; x.fillStyle = "#d4af37"; x.fillRect(W - padR, Y(last) - 8, padR, 16); x.fillStyle = "#1a1500"; x.fillText(last.toFixed(1), W - padR + 4, Y(last));
+}
+async function run() {
+  $("#go").disabled = true; $("#err").textContent = ""; $("#go").textContent = "در حال تحلیل…";
+  try { const j = await api("analyze", "POST", {mode}); render(j.res, j.id, null); loadHist(); }
+  catch (e) { $("#err").textContent = e.message; }
+  $("#go").disabled = false; $("#go").textContent = "تحلیل جدید";
+}
+async function narrate() {
+  $("#aiBtn").disabled = true; $("#aiBtn").textContent = "در حال نوشتن…";
+  try { const j = await api(`analyses/${aid}/narrate`, "POST"); $("#ai").textContent = j.text; $("#ai").style.color = "var(--tx)"; $("#aiBtn").hidden = true; }
+  catch (e) { $("#err").textContent = e.message; }
+  $("#aiBtn").disabled = false; $("#aiBtn").textContent = "تولید روایت با هوش مصنوعی";
+}
+async function openOld(id) { try { const j = await api("analyses/" + id); render(j.res, id, j.ai); scrollTo({top: 0, behavior: "smooth"}); } catch (e) { $("#err").textContent = e.message; } }
+function loadHist(list) {
+  api("me").then(j => { aiOn = j.ai; $("#hist").innerHTML = j.history.map(h => `<div class="hist" onclick="openOld('${h.id}')">
+    <span>${new Date(h.t).toLocaleString("fa-IR", {dateStyle: "short", timeStyle: "short"})} · ${h.mode === "scalp" ? "اسکالپ" : "سوئینگ"}</span>
+    <span style="direction:ltr">${h.price} ${h.grade ? "· " + h.grade : ""}</span></div>`).join("") || '<div class="why">هنوز تحلیلی نداری.</div>'; }).catch(() => {});
+}
+addEventListener("resize", () => cur && draw());
+api("me").then(j => { aiOn = j.ai; setMode(j.mode); run(); }).catch(e => $("#err").textContent = e.message);
+</script>
+</body>
+</html>
