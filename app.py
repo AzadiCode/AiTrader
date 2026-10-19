@@ -10,11 +10,13 @@
 Environment الزامی:  MOTHER_TOKEN  BASE_URL  ADMIN_IDS
 اختیاری: MONGO_URI SECRET_KEY ALLOWED_IDS ADMIN_WEB_KEY
          AI_BASE_URL AI_API_KEY AI_MODEL   (برای روایت متنی؛ نبودشون = فقط تحلیل کدی)
-         OANDA_TOKEN (بهترین منبع) TD_API_KEY (Twelve Data)  DATA_SOURCE=auto|twelve|binance|yahoo  BINANCE_SYMBOL  DATA_SYMBOL (فال‌بک یاهو)
+         دیتا پیش‌فرض: Dukascopy (بدون کلید)؛ اختیاری: TD_API_KEY (Twelve Data) / OANDA_TOKEN   DATA_SOURCE=auto|dukascopy|twelve|yahoo|binance  BINANCE_SYMBOL  DATA_SYMBOL (فال‌بک یاهو)
 """
-import os, re, json, time, hmac, hashlib, logging, threading, functools
+import os, re, json, time, hmac, hashlib, logging, threading, functools, lzma, struct
+from concurrent.futures import ThreadPoolExecutor
+from zoneinfo import ZoneInfo
 from urllib.parse import parse_qsl
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import requests
 from flask import Flask, g, jsonify, request, send_from_directory
@@ -118,7 +120,7 @@ def rate_ok(key, n, window):
 
 # ───────────────────────── دیتای بازار ─────────────────────────
 # زنجیرهٔ منابع (اولی که جواب بده): Twelve Data (اگه کلید باشه) ← Binance XAUUSDT ← Yahoo XAUUSD=X ← Yahoo DATA_SYMBOL
-# DATA_SOURCE=auto|oanda|twelve|yahoo|binance   ·   OANDA_TOKEN + OANDA_ENV=practice|live   ·   BINANCE_SYMBOL (پیش‌فرض XAUUSDT)
+# DATA_SOURCE=auto|dukascopy|oanda|twelve|yahoo|binance   ·   OANDA_TOKEN + OANDA_ENV=practice|live   ·   BINANCE_SYMBOL (پیش‌فرض XAUUSDT)
 TF_SEC = {"M1": 60, "M5": 300, "M15": 900, "H1": 3600, "H4": 14400, "D1": 86400}
 TF_BIN = {"M1": "1m", "M5": "5m", "M15": "15m", "H1": "1h", "H4": "4h", "D1": "1d"}
 TF_TD = {"M1": "1min", "M5": "5min", "M15": "15min", "H1": "1h", "H4": "4h", "D1": "1day"}
@@ -146,6 +148,89 @@ def _oanda(tf):
         dt = datetime.strptime(k["time"][:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
         out.append({"t": int(dt.timestamp()), "o": float(m["o"]), "h": float(m["h"]), "l": float(m["l"]), "c": float(m["c"])})
     return out
+
+
+NY = ZoneInfo("America/New_York")
+DUKA = "https://datafeed.dukascopy.com/datafeed/XAUUSD"
+_bi5c = {}
+# تایم‌فریم ← (کندل پایه، دامنه‌ی دریافت: تعداد روز برای M1 / تعداد ماه برای H1)
+DUKA_SPEC = {"M1": ("M1", 2), "M5": ("M1", 6), "M15": ("M1", 14), "H1": ("H1", 3), "H4": ("H1", 6), "D1": ("H1", 12)}
+
+
+def _bi5(path, base_ts, cur):
+    """فایل کندل Dukascopy (LZMA، رکورد ۲۴ بایتی: زمان، open، close، low، high، حجم). فایل‌های گذشته مدت طولانی کش می‌شن."""
+    hit = _bi5c.get(path)
+    if hit and time.time() - hit[0] < (20 if cur else 21600):
+        return hit[1]
+    r = HTTP.get(f"{DUKA}/{path}", timeout=12)
+    rows = []
+    if r.status_code != 404:
+        r.raise_for_status()
+        if r.content:
+            raw = lzma.decompress(r.content)
+            for s, o, c, l, h, _v in struct.iter_unpack(">IIIIIf", raw[:len(raw) // 24 * 24]):
+                if o and h and l and c:
+                    rows.append({"t": base_ts + s, "o": o / 1000, "h": h / 1000, "l": l / 1000, "c": c / 1000})
+    _bi5c[path] = (time.time(), rows)
+    return rows
+
+
+def _duka_base(base, span):
+    now_d, jobs = datetime.now(timezone.utc), []
+    if base == "M1":
+        d, n = now_d, 0
+        while n < span:
+            if d.weekday() != 5:                                   # شنبه بازار بسته‌ست
+                ts = int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
+                jobs.append((f"{d.year}/{d.month - 1:02d}/{d.day:02d}/BID_candles_min_1.bi5", ts, d.date() == now_d.date()))
+                n += 1
+            d -= timedelta(days=1)
+    else:
+        y, m = now_d.year, now_d.month
+        for i in range(span):
+            ts = int(datetime(y, m, 1, tzinfo=timezone.utc).timestamp())
+            jobs.append((f"{y}/{m - 1:02d}/BID_candles_hour_1.bi5", ts, i == 0))
+            y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    with ThreadPoolExecutor(8) as ex:
+        return [x for rows in ex.map(lambda j: _bi5(*j), jobs) for x in rows]
+
+
+def _stitch(B, base):
+    """اگه فایل Dukascopy عقب بود (ساعت/روز جاری)، دنباله رو از Yahoo اسپات می‌چسبونیم و جوش رو تراز می‌کنیم."""
+    if not B or B[-1]["t"] >= time.time() - 3 * TF_SEC[base]:
+        return B
+    try:
+        Y = _yahoo(base, "XAUUSD=X")
+    except Exception:
+        return B
+    tail = [y for y in Y if y["t"] > B[-1]["t"]]
+    if not tail:
+        return B
+    ref = next((y for y in Y if y["t"] == B[-1]["t"]), None)
+    sh = B[-1]["c"] - (ref["c"] if ref else tail[0]["o"])
+    return B + [{"t": y["t"], "o": y["o"] + sh, "h": y["h"] + sh, "l": y["l"] + sh, "c": y["c"] + sh} for y in tail]
+
+
+def _ny_resample(c, step):
+    """H4/D1 هم‌تراز با بروکرها: شروع روز = ۱۷:۰۰ نیویورک (با DST)."""
+    out = {}
+    for x in c:
+        off = datetime.fromtimestamp(x["t"], NY).utcoffset().total_seconds()
+        k = int((x["t"] + off - 61200) // step * step)
+        b = out.get(k)
+        if not b:
+            out[k] = {"t": int(k + 61200 - off), "o": x["o"], "h": x["h"], "l": x["l"], "c": x["c"]}
+        else:
+            b["h"], b["l"], b["c"] = max(b["h"], x["h"]), min(b["l"], x["l"]), x["c"]
+    return [out[k] for k in sorted(out)]
+
+
+def _duka(tf):
+    base, span = DUKA_SPEC[tf]
+    B = clean(_stitch(sorted(_duka_base(base, span), key=lambda x: x["t"]), base))
+    if tf == base:
+        return B
+    return _resample(B, TF_SEC[tf]) if tf in ("M5", "M15") else _ny_resample(B, TF_SEC[tf])
 
 
 def _binance(tf):
@@ -208,12 +293,14 @@ def clean(c):
 
 
 def _chain():
-    """ترتیب کیفیت: OANDA ← Twelve Data ← Yahoo اسپات ← Binance (پرپچوال کم‌عمق، شدوی M1 ضعیف) ← Yahoo فیوچرز."""
+    """ترتیب کیفیت: (OANDA/Twelve اگه کلید باشه) ← Dukascopy (بدون اکانت) ← Yahoo اسپات ← Binance (پرپچوال کم‌عمق، شدوی M1 ضعیف) ← Yahoo فیوچرز."""
     ch = []
     if OANDA_TOKEN and SRC in ("auto", "oanda"):
         ch.append(("oanda", _oanda))
     if TD_KEY and SRC in ("auto", "twelve"):
         ch.append(("twelve", _twelve))
+    if SRC in ("auto", "dukascopy"):
+        ch.append(("dukascopy", _duka))
     if SRC in ("auto", "yahoo"):
         ch.append(("yahoo-spot", lambda tf: _yahoo(tf, "XAUUSD=X")))
     if SRC in ("auto", "binance"):
@@ -241,7 +328,7 @@ def _fetch(tf):
 
 def candles(tf):
     """لیست کندل‌ها (آخری ممکنه در حال تشکیل باشه). کش کوتاه + قفل برای هر تایم‌فریم تا درخواست‌های هم‌زمان یکی بشن."""
-    ttl = {"twelve": 20, "oanda": 1}.get(SRC_USED.get(tf), 3)
+    ttl = {"twelve": 20, "oanda": 1, "dukascopy": 4}.get(SRC_USED.get(tf), 3)
     hit = _cache.get(tf)
     if hit and time.time() - hit[0] < ttl:
         return hit[1]

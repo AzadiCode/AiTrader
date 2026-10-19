@@ -206,7 +206,7 @@ function setPrice() {
 }
 async function loadTF(t) {
   const j = await api(`candles?tf=${t}&limit=2500`); if (t !== tf) return;
-  C = j.c; TS = C.map(k => k[0]); loadedTf = t; $("#src").textContent = (["oanda", "twelve"].includes(j.src) ? "" : "⚠ ") + (j.src || ""); setPrice(); resetView(); setDot("ok");
+  C = j.c; TS = C.map(k => k[0]); loadedTf = t; $("#src").textContent = (["dukascopy", "oanda", "twelve"].includes(j.src) ? "" : "⚠ ") + (j.src || ""); setPrice(); resetView(); setDot("ok");
 }
 let busy = false;
 async function poll() {
