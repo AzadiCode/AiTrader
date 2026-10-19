@@ -24,7 +24,7 @@ h1{font-size:15px;font-weight:600;color:var(--gold)}
 .chart{padding:0;overflow:hidden}
 .cwrap{position:relative;direction:ltr;height:min(60vh,470px);min-height:340px}
 #cv{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair;user-select:none}
-#ohlc{position:absolute;top:4px;left:8px;right:62px;font:10px/1.35 ui-monospace,Menlo,monospace;color:var(--mut);pointer-events:none}#ohlc b{color:var(--tx);font-weight:500}
+#ohlc{position:absolute;top:4px;left:6px;width:fit-content;max-width:calc(100% - 68px);background:rgba(22,26,31,.78);padding:1px 6px;border-radius:6px;font:10px/1.35 ui-monospace,Menlo,monospace;color:var(--mut);pointer-events:none}#ohlc b{color:var(--tx);font-weight:500}
 #jump{position:absolute;bottom:26px;right:64px;background:#222831;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:2px 10px;font-size:12px;cursor:pointer;display:none}
 .layers{display:flex;gap:6px;padding:8px 10px;direction:ltr;border-top:1px solid var(--line);flex-wrap:wrap}
 .layers b{font:600 11px ui-monospace,monospace;padding:2px 9px;border-radius:99px;border:1px solid var(--line);color:var(--mut);cursor:pointer}
@@ -78,7 +78,7 @@ async function api(p, m = "GET", b) {
   const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.status); return j;
 }
 const SEC = {M1: 60, M5: 300, M15: 900, H1: 3600, H4: 14400, D1: 86400}, ROLE = ["بایاس", "ناحیه", "ورود"];
-let mode = "scalp", cur = null, tf = null, aid = null, aiOn = false, loadedTf = null;
+let mode = "scalp", cur = null, tf = null, aid = null, aiOn = false, loadedTf = null, loadedSrc = null;
 
 /* ══════════════ موتور چارت زنده (پن/زوم/کراس‌هیر) ══════════════ */
 const cv = $("#cv"), cx = cv.getContext("2d"), AX = 58, AY = 20;
@@ -119,19 +119,20 @@ function draw() {
   const step = nice((V.y1 - V.y0) / 6), ticks = []; for (let p = Math.ceil(V.y0 / step) * step; p < V.y1; p += step) ticks.push(p);
   x.save(); x.beginPath(); x.rect(0, 0, pw, ph); x.clip();
   x.strokeStyle = "#1c2128"; x.lineWidth = 1; ticks.forEach(p => { const y = Math.round(Y(p)) + .5; x.beginPath(); x.moveTo(0, y); x.lineTo(pw, y); x.stroke(); });
-  const ov = cur && cur.charts && cur.charts[loadedTf], T = v => v > 1e9;
+  const ov = cur && cur.charts && cur.charts[loadedTf], T = v => v > 1e9, used = [];
+  const lab = (txt, y, dir, col) => { for (let k = 0; k < 8 && used.some(u => Math.abs(u - y) < 11); k++) y += dir * 11; used.push(y); x.fillStyle = col; x.textAlign = "right"; x.fillText(txt, pw - 4, y); };
   const zone = (t, lo, hi, fill, line, label) => {
     const x0 = X(fi(t)) - bw / 2, y0 = Y(hi), hgt = Math.max(1, Y(lo) - y0); if (x0 > pw) return;
     x.fillStyle = fill; x.fillRect(x0, y0, pw - x0, hgt); x.strokeStyle = line; x.lineWidth = 1; x.beginPath(); x.moveTo(x0, y0 + .5); x.lineTo(pw, y0 + .5); x.moveTo(x0, y0 + hgt - .5); x.lineTo(pw, y0 + hgt - .5); x.stroke();
-    if (label && hgt > 11) { x.fillStyle = line; x.textAlign = "right"; x.fillText(label, pw - 4, y0 + 7); }
+    if (label && hgt > 11) lab(label, y0 + 7, 1, line);
   };
   if (ov) {
     if (layers.fvg) ov.fvg.filter(g => T(g.t)).slice(-3).forEach(g => zone(g.t, g.lo, g.hi, "rgba(91,156,245,.13)", "rgba(91,156,245,.45)", "FVG"));
     if (layers.ob) ov.ob.filter(o => T(o.t)).forEach(o => zone(o.t, o.lo, o.hi, o.d > 0 ? "rgba(38,166,154,.2)" : "rgba(239,83,80,.2)", o.d > 0 ? "rgba(38,166,154,.8)" : "rgba(239,83,80,.8)", (o.d > 0 ? "OB▲" : "OB▼") + (o.st === "tested" ? " T" : "")));
     x.setLineDash([5, 4]); x.lineWidth = 1;
-    if (layers.liq) ov.liq.filter(l => T(l.t)).forEach(l => { const x0 = X(fi(l.t)), y = Math.round(Y(l.p)) + .5; x.strokeStyle = x.fillStyle = "#d4af37"; x.beginPath(); x.moveTo(Math.max(0, x0), y); x.lineTo(pw, y); x.stroke(); x.textAlign = "right"; x.fillText((l.k === "H" ? "EQH" : "EQL") + (l.st === "swept" ? " ✕" : ""), pw - 4, y - 6); });
+    if (layers.liq) ov.liq.filter(l => T(l.t) && l.st !== "swept").forEach(l => { const x0 = X(fi(l.t)), y = Math.round(Y(l.p)) + .5; x.strokeStyle = x.fillStyle = "#d4af37"; x.beginPath(); x.moveTo(Math.max(0, x0), y); x.lineTo(pw, y); x.stroke(); lab(l.k === "H" ? "EQH" : "EQL", y - 6, -1, "#d4af37"); });
     if (layers.st) ov.ev.filter(e => T(e.a)).forEach(e => { const a = X(fi(e.a)), b = X(fi(e.b)), y = Math.round(Y(e.lvl)) + .5; if (b < 0 || a > pw || b - a < 20) return; x.strokeStyle = x.fillStyle = e.d > 0 ? UP : DN; x.beginPath(); x.moveTo(Math.max(0, a), y); x.lineTo(b, y); x.stroke(); if (b - a > 34) { x.textAlign = "center"; x.fillText(e.t, (Math.max(0, a) + b) / 2, y + (e.d > 0 ? -7 : 8)); } });
-    if (ov.pd) { const y = Math.round(Y(ov.pd.eq)) + .5; x.strokeStyle = x.fillStyle = "#6b7480"; x.beginPath(); x.moveTo(0, y); x.lineTo(pw, y); x.stroke(); x.textAlign = "right"; x.fillText("EQ", pw - 4, y - 6); }
+    if (ov.pd) { const y = Math.round(Y(ov.pd.eq)) + .5; x.strokeStyle = x.fillStyle = "#6b7480"; x.beginPath(); x.moveTo(0, y); x.lineTo(pw, y); x.stroke(); lab("EQ", y - 6, -1, "#6b7480"); }
     x.setLineDash([]);
   }
   const a = Math.max(0, Math.floor(invX(0)) - 1), b = Math.min(n - 1, Math.ceil(V.R));
@@ -150,8 +151,14 @@ function draw() {
   x.fillStyle = "#161a1f"; x.fillRect(pw, 0, AX, Hh); x.fillRect(0, ph, W, AY);
   x.strokeStyle = "#252b33"; x.beginPath(); x.moveTo(pw + .5, 0); x.lineTo(pw + .5, ph + .5); x.lineTo(0, ph + .5); x.stroke();
   x.fillStyle = "#8b949e"; x.textAlign = "left"; ticks.forEach(p => x.fillText(p.toFixed(step >= 1 ? 0 : step >= .1 ? 1 : 2), pw + 5, Y(p)));
-  const every = Math.max(1, Math.ceil(78 / bw)); x.textAlign = "center";
-  for (let i = Math.ceil(invX(0) / every) * every; i <= V.R; i += every) if (i >= 0) x.fillText(fmt(tAt(i)), X(i), ph + AY / 2 + 1);
+  const TI = [60, 300, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 432000, 604800, 1209600, 2592000], sec = SEC[loadedTf];
+  const iv = TI.find(v => v >= 62 / bw * sec) || TI[TI.length - 1], off = -new Date().getTimezoneOffset() * 60; let lastX = -1e9; x.textAlign = "center";
+  for (let i = Math.max(1, Math.floor(invX(0))); i <= Math.ceil(V.R); i++) {            // لیبل روی مرز «ساعت/روز گرد»، نه ایندکس ثابت
+    const t = tAt(i); if (Math.floor((t + off) / iv) === Math.floor((tAt(i - 1) + off) / iv)) continue;
+    const px = X(i); if (px < 16 || px > pw - 16 || px - lastX < 54) continue; lastX = px;
+    const d = new Date(t * 1000), day = iv >= 86400 || (d.getHours() === 0 && d.getMinutes() === 0);
+    x.fillStyle = day ? "#c9d1d9" : "#8b949e"; x.fillText(day ? d.getDate() + " " + MON[d.getMonth()] : p2(d.getHours()) + ":" + p2(d.getMinutes()), px, ph + AY / 2 + 1);
+  }
   const tag = (y, txt, bg, fg) => { x.fillStyle = bg; x.fillRect(pw, y - 8, AX, 16); x.fillStyle = fg; x.textAlign = "left"; x.fillText(txt, pw + 5, y); };
   tag(Y(last), last.toFixed(2), C[n - 1][4] >= C[n - 1][1] ? UP : DN, "#fff");
   let ci = n - 1;
@@ -206,13 +213,19 @@ function setPrice() {
 }
 async function loadTF(t) {
   const j = await api(`candles?tf=${t}&limit=2500`); if (t !== tf) return;
-  C = j.c; TS = C.map(k => k[0]); loadedTf = t; $("#src").textContent = (["dukascopy", "oanda", "twelve"].includes(j.src) ? "" : "⚠ ") + (j.src || ""); setPrice(); resetView(); setDot("ok");
+  C = j.c; TS = C.map(k => k[0]); loadedTf = t; loadedSrc = j.src; srcLabel(j); setPrice(); resetView(); setDot("ok");
+}
+function srcLabel(j) {
+  const stale = j.age != null && !j.closed && j.age > 4 * SEC[loadedTf] + 120;
+  $("#src").textContent = (["dukascopy", "oanda", "twelve"].includes(j.src) ? "" : "⚠ ") + (j.src || "") + (stale ? " · ⚠ " + Math.round(j.age / 60) + "د عقب" : "");
 }
 let busy = false;
 async function poll() {
   if (document.hidden || !C.length || busy || loadedTf !== tf) return; busy = true; const t0 = tf;
   try {
-    const j = await api(`candles?tf=${t0}&since=${C[Math.max(0, C.length - 3)][0]}`); if (t0 !== tf) return;
+    const j = await api(`candles?tf=${t0}&since=${C[Math.max(0, C.length - 90)][0]}`); if (t0 !== tf) return;
+    if (j.src !== loadedSrc) { loadedSrc = j.src; await loadTF(t0); busy = false; return; }   // منبع عوض شده ← قیمت‌ها هم‌سطح نیستن، کل دیتا رو دوباره بگیر
+    srcLabel(j);
     const atEnd = V.R >= C.length - .5; let pushed = 0;
     for (const k of j.c) { let i = C.length - 1; while (i >= 0 && C[i][0] > k[0]) i--; if (i >= 0 && C[i][0] === k[0]) C[i] = k; else if (i === C.length - 1) { C.push(k); TS.push(k[0]); pushed++; } }
     if (atEnd && pushed) V.R += pushed;
