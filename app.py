@@ -10,7 +10,7 @@
 Environment الزامی:  MOTHER_TOKEN  BASE_URL  ADMIN_IDS
 اختیاری: MONGO_URI SECRET_KEY ALLOWED_IDS ADMIN_WEB_KEY
          AI_BASE_URL AI_API_KEY AI_MODEL   (برای روایت متنی؛ نبودشون = فقط تحلیل کدی)
-         TD_API_KEY (Twelve Data، منبع دقیق‌تر)  DATA_SYMBOL (پیش‌فرض یاهو: GC=F)
+         TD_API_KEY (Twelve Data، تمیزترین منبع)  DATA_SOURCE=auto|twelve|binance|yahoo  BINANCE_SYMBOL  DATA_SYMBOL (فال‌بک یاهو)
 """
 import os, re, json, time, hmac, hashlib, logging, threading, functools
 from urllib.parse import parse_qsl
@@ -117,23 +117,36 @@ def rate_ok(key, n, window):
 
 
 # ───────────────────────── دیتای بازار ─────────────────────────
-TF_SEC = {"M15": 900, "H1": 3600, "H4": 14400, "D1": 86400}
-_cache = {}
+# زنجیرهٔ منابع (اولی که جواب بده): Twelve Data (اگه کلید باشه) ← Binance XAUUSDT ← Yahoo XAUUSD=X ← Yahoo DATA_SYMBOL
+# DATA_SOURCE=auto|twelve|binance|yahoo   ·   BINANCE_SYMBOL (پیش‌فرض XAUUSDT)
+TF_SEC = {"M1": 60, "M5": 300, "M15": 900, "H1": 3600, "H4": 14400, "D1": 86400}
+TF_BIN = {"M1": "1m", "M5": "5m", "M15": "15m", "H1": "1h", "H4": "4h", "D1": "1d"}
+TF_TD = {"M1": "1min", "M5": "5min", "M15": "15min", "H1": "1h", "H4": "4h", "D1": "1day"}
+TF_YH = {"M1": ("1m", "7d"), "M5": ("5m", "30d"), "M15": ("15m", "30d"), "H1": ("60m", "180d"), "D1": ("1d", "3y")}
+SRC = os.environ.get("DATA_SOURCE", "auto").lower()
+BIN_SYMBOL = os.environ.get("BINANCE_SYMBOL", "XAUUSDT")
+HTTP = requests.Session()
+HTTP.headers["User-Agent"] = "Mozilla/5.0"
+_cache, _locks, _bad, SRC_USED = {}, {k: threading.Lock() for k in TF_SEC}, {}, {}
+_an_cache = {}
 
 
-def _yahoo(interval, rng):
-    r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}", params={"interval": interval, "range": rng},
-                     headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-    r.raise_for_status()
-    res = r.json()["chart"]["result"][0]
-    q = res["indicators"]["quote"][0]
-    return [{"t": t, "o": o, "h": h, "l": l, "c": c} for t, o, h, l, c in zip(res["timestamp"], q["open"], q["high"], q["low"], q["close"])
-            if None not in (o, h, l, c)]
+def _binance(tf):
+    err = None
+    for url, sym, lim in (("https://fapi.binance.com/fapi/v1/klines", BIN_SYMBOL, 1500),
+                          ("https://data-api.binance.vision/api/v3/klines", "PAXGUSDT", 1000)):
+        try:
+            r = HTTP.get(url, params={"symbol": sym, "interval": TF_BIN[tf], "limit": lim}, timeout=10)
+            r.raise_for_status()
+            return [{"t": k[0] // 1000, "o": float(k[1]), "h": float(k[2]), "l": float(k[3]), "c": float(k[4])} for k in r.json()]
+        except Exception as e:
+            err = e
+    raise err
 
 
-def _twelve(interval, size=500):
-    r = requests.get("https://api.twelvedata.com/time_series", params={"symbol": "XAU/USD", "interval": interval, "outputsize": size,
-                                                                       "apikey": TD_KEY, "timezone": "UTC"}, timeout=15)
+def _twelve(tf):
+    r = HTTP.get("https://api.twelvedata.com/time_series", params={"symbol": "XAU/USD", "interval": TF_TD[tf], "outputsize": 1500,
+                                                                   "apikey": TD_KEY, "timezone": "UTC"}, timeout=15)
     v = r.json().get("values")
     if not v:
         raise RuntimeError("Twelve Data: " + str(r.json())[:200])
@@ -142,6 +155,18 @@ def _twelve(interval, size=500):
         dt = datetime.strptime(x["datetime"][:19], "%Y-%m-%d %H:%M:%S" if len(x["datetime"]) > 10 else "%Y-%m-%d")
         out.append({"t": int(dt.replace(tzinfo=timezone.utc).timestamp()), "o": float(x["open"]), "h": float(x["high"]), "l": float(x["low"]), "c": float(x["close"])})
     return out
+
+
+def _yahoo(tf, sym):
+    if tf == "H4":
+        return _resample(_yahoo("H1", sym), 14400)
+    iv, rng = TF_YH[tf]
+    r = HTTP.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}", params={"interval": iv, "range": rng}, timeout=15)
+    r.raise_for_status()
+    res = r.json()["chart"]["result"][0]
+    q = res["indicators"]["quote"][0]
+    return [{"t": t, "o": o, "h": h, "l": l, "c": c} for t, o, h, l, c in zip(res["timestamp"], q["open"], q["high"], q["low"], q["close"])
+            if None not in (o, h, l, c)]
 
 
 def _resample(c, step):
@@ -156,31 +181,79 @@ def _resample(c, step):
     return [out[k] for k in sorted(out)]
 
 
+def clean(c):
+    """مرتب‌سازی، حذف تکراری، و اصلاح های/لو تا همیشه شامل open/close باشن."""
+    d = {}
+    for x in c:
+        d[x["t"]] = {"t": x["t"], "o": round(x["o"], 2), "c": round(x["c"], 2),
+                     "h": round(max(x["h"], x["o"], x["c"]), 2), "l": round(min(x["l"], x["o"], x["c"]), 2)}
+    return [d[k] for k in sorted(d)]
+
+
+def _chain():
+    ch = []
+    if TD_KEY and SRC in ("auto", "twelve"):
+        ch.append(("twelve", _twelve))
+    if SRC in ("auto", "binance"):
+        ch.append(("binance", _binance))
+    if SRC in ("auto", "yahoo"):
+        ch += [("yahoo-spot", lambda tf: _yahoo(tf, "XAUUSD=X")), ("yahoo-fut", lambda tf: _yahoo(tf, SYMBOL))]
+    return ch
+
+
+def _fetch(tf):
+    for name, fn in _chain():
+        if _bad.get((name, tf), 0) > time.time():
+            continue
+        try:
+            c = clean(fn(tf))
+            if len(c) >= 60:
+                SRC_USED[tf] = name
+                return c
+            raise RuntimeError("دیتای ناکافی")
+        except Exception as e:
+            log.warning("source %s/%s: %s", name, tf, str(e)[:150])
+            _bad[(name, tf)] = time.time() + 90
+    raise RuntimeError("هیچ‌کدوم از منابع دیتا جواب ندادن")
+
+
 def candles(tf):
+    """لیست کندل‌ها (آخری ممکنه در حال تشکیل باشه). کش کوتاه + قفل برای هر تایم‌فریم تا درخواست‌های هم‌زمان یکی بشن."""
+    ttl = 20 if SRC_USED.get(tf) == "twelve" else 3
     hit = _cache.get(tf)
-    if hit and time.time() - hit[0] < 60:
+    if hit and time.time() - hit[0] < ttl:
         return hit[1]
-    if TD_KEY:
-        c = _twelve({"M15": "15min", "H1": "1h", "H4": "4h", "D1": "1day"}[tf])
-    elif tf == "H4":
-        c = _resample(candles("H1"), 14400)
-    else:
-        c = _yahoo(*{"M15": ("15m", "30d"), "H1": ("60m", "90d"), "D1": ("1d", "2y")}[tf])
-    closed = [x for x in c if x["t"] + TF_SEC[tf] <= time.time() + 5]        # کندل در حال تشکیل وارد تحلیل نمی‌شه (ضد repaint)
-    out = closed + [x for x in c if x not in closed][-1:]                    # ولی آخرین قیمت زنده برای نمایش می‌مونه
-    _cache[tf] = (time.time(), out)
-    return out
+    with _locks[tf]:
+        hit = _cache.get(tf)
+        if hit and time.time() - hit[0] < ttl:
+            return hit[1]
+        try:
+            c = _fetch(tf)
+        except Exception:
+            if hit:
+                return hit[1]
+            raise
+        _cache[tf] = (time.time(), c)
+        return c
 
 
 def analyze_now(mode):
-    tfs = smc.MODES[mode]
     data = {}
-    for tf in tfs:
+    for tf in smc.MODES[mode]:
         c = candles(tf)
-        data[tf] = c[:-1] if c and c[-1]["t"] + TF_SEC[tf] > time.time() + 5 else c
+        if c and c[-1]["t"] + TF_SEC[tf] > time.time() + 2:     # کندل در حال تشکیل وارد تحلیل نمی‌شه (ضد repaint)
+            c = c[:-1]
+        data[tf] = c[-900:]
     if any(len(v) < 60 for v in data.values()):
         raise RuntimeError("دیتای کافی از منبع نیومد")
-    return smc.run(data, mode)
+    key = (mode,) + tuple(v[-1]["t"] for v in data.values())
+    if key in _an_cache:
+        return _an_cache[key]
+    res = smc.run(data, mode)
+    if len(_an_cache) > 12:
+        _an_cache.clear()
+    _an_cache[key] = res
+    return res
 
 
 # ───────────────────────── هوش مصنوعی (فقط روایت) ─────────────────────────
@@ -244,20 +317,39 @@ def api_me(uid):
     return jsonify(name=g.user.get("first_name", ""), mode=u.get("mode", "scalp"), history=hist, ai=AI_ON)
 
 
+@app.get("/api/candles")
+@authed
+def api_candles(uid):
+    tf = request.args.get("tf", "")
+    if tf not in TF_SEC:
+        return jsonify(error="bad tf"), 400
+    if not rate_ok(f"cd{uid}", 90, 60):
+        return jsonify(error="کمی صبر کن"), 429
+    try:
+        c = candles(tf)
+    except Exception as e:
+        return jsonify(error="خطا در دریافت دیتا: " + str(e)[:150]), 502
+    since = request.args.get("since", type=int)
+    c = [x for x in c if x["t"] >= since] if since else c[-min(request.args.get("limit", 1500, type=int), 1500):]
+    return jsonify(tf=tf, src=SRC_USED.get(tf), c=[[x["t"], x["o"], x["h"], x["l"], x["c"]] for x in c])
+
+
 @app.post("/api/analyze")
 @authed
 def api_analyze(uid):
-    mode = (request.get_json(silent=True) or {}).get("mode")
-    mode = mode if mode in smc.MODES else "scalp"
-    if not rate_ok(f"an{uid}", 8, 60):
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode") if body.get("mode") in smc.MODES else "scalp"
+    live = bool(body.get("live"))                      # رفرش خودکار: ذخیره نمی‌شه و تاریخچه رو شلوغ نمی‌کنه
+    if not rate_ok(f"{'lv' if live else 'an'}{uid}", 6 if live else 8, 60):
         return jsonify(error="کمی صبر کن"), 429
-    db.users.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
+    if not live:
+        db.users.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
     try:
         res = analyze_now(mode)
     except Exception as e:
         log.exception("analyze")
         return jsonify(error="خطا در دریافت دیتا: " + str(e)[:150]), 502
-    return jsonify(id=save(uid, res), res=res)
+    return jsonify(id=None if live else save(uid, res), res=res)
 
 
 @app.get("/api/analyses/<aid>")
@@ -323,10 +415,10 @@ def handle_msg(msg):
         return tg("sendMessage", chat_id=uid, text="دسترسی نداری.")
     if text.startswith("/start"):
         return tg("sendMessage", chat_id=uid, reply_markup=open_btn(),
-                  text="سلام! من تحلیلگر ساختار بازار طلا هستم.\nساختار، OB، FVG و لیکوییدیتی رو با کد تشخیص می‌دم، نه با حدس مدل.\n\n/gold — تحلیل سریع اسکالپ (H4 ← H1 ← M15)\n/swing — تحلیل سوئینگ (D1 ← H4 ← H1)")
+                  text="سلام! من تحلیلگر ساختار بازار طلا هستم.\nساختار، OB، FVG و لیکوییدیتی رو با کد تشخیص می‌دم، نه با حدس مدل.\n\n/fast — اسکالپ سریع (H1 ← M5 ← M1)\n/gold — اسکالپ (H4 ← H1 ← M15)\n/swing — تحلیل سوئینگ (D1 ← H4 ← H1)")
     if msg.get("photo"):
         return tg("sendMessage", chat_id=uid, text="عکس چارت دقیق خونده نمی‌شه؛ من خودم دیتای کندل رو می‌گیرم و دقیق‌تر تحلیل می‌کنم. /gold رو بزن.")
-    mode = "swing" if text.startswith("/swing") else "scalp" if text.startswith(("/gold", "/scalp")) else None
+    mode = "swing" if text.startswith("/swing") else "fast" if text.startswith("/fast") else "scalp" if text.startswith(("/gold", "/scalp")) else None
     if not mode:
         return
     if not rate_ok(f"an{uid}", 8, 60):
@@ -365,7 +457,7 @@ def hook():
 def setup_bot():
     r = tg("setWebhook", url=f"{BASE_URL}/mother", secret_token=WEBHOOK_SECRET, allowed_updates=["message"])
     tg("setChatMenuButton", menu_button={"type": "web_app", "text": "تحلیل طلا", "web_app": {"url": BASE_URL}})
-    tg("setMyCommands", commands=[{"command": "start", "description": "شروع"}, {"command": "gold", "description": "تحلیل اسکالپ"},
+    tg("setMyCommands", commands=[{"command": "start", "description": "شروع"}, {"command": "fast", "description": "اسکالپ سریع M1/M5"}, {"command": "gold", "description": "تحلیل اسکالپ"},
                                   {"command": "swing", "description": "تحلیل سوئینگ"}])
     log.info("webhook: %s", r)
 

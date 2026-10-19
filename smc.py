@@ -7,7 +7,7 @@
 """
 from datetime import datetime, timezone
 
-MODES = {"scalp": ("H4", "H1", "M15"), "swing": ("D1", "H4", "H1")}   # (بایاس، ناحیهٔ ورود POI، تریگر)
+MODES = {"fast": ("H1", "M5", "M1"), "scalp": ("H4", "H1", "M15"), "swing": ("D1", "H4", "H1")}   # (بایاس، ناحیهٔ ورود POI، تریگر)
 
 
 def atr(c, n=14):
@@ -242,20 +242,19 @@ def run(data, mode="scalp"):
                            "why": why, "entry": round(entry, 2), "sl": round(sl, 2), "tp": round(tp_, 2) if tp_ else None, "rr": rr,
                            "inzone": o["lo"] <= price <= o["hi"]})
     setups.sort(key=lambda s: (-s["score"], abs(s["entry"] - price)))
-    charts = {}
+    charts = {}   # اوورلی‌ها بر اساس «زمان» (نه ایندکس) تا روی چارت زنده و قابل اسکرول درست بشینن
     for tf, A in ((tb, B), (tp, P), (te, E)):
         cs = data[tf]
-        n = min(120, len(cs))
-        off = len(cs) - n
-        f = lambda i: max(0, i - off)
+        n = len(cs)
+        lim = max(0, n - 500)
+        T = lambda i, cs=cs, n=n: cs[min(max(i, 0), n - 1)]["t"]
         charts[tf] = {
-            "c": [[x["t"], x["o"], x["h"], x["l"], x["c"]] for x in cs[-n:]],
-            "ob": [{"i": f(o["i"]), "d": o["d"], "lo": o["lo"], "hi": o["hi"], "st": o["st"]} for o in A["ob"] if o["st"] != "broken" and o["b"] >= off][-6:],
-            "fvg": [{"i": f(g["i"] - 2), "d": g["d"], "lo": g["lo"], "hi": g["hi"]} for g in A["fvg"] if g["fill"] < 1 and g["i"] >= off][-6:],
-            "liq": [{"k": l["k"], "p": l["p"], "i": f(l["i"]), "st": l["st"]} for l in A["liq"] if l["st"] != "taken"][-4:],
-            "ev": [{"t": e["type"], "d": e["dir"], "lvl": e["lvl"], "a": f(e["from"]), "b": e["i"] - off} for e in A["ev"] if e["i"] >= off][-8:],
+            "ob": [{"t": T(o["i"]), "d": o["d"], "lo": o["lo"], "hi": o["hi"], "st": o["st"]} for o in A["ob"] if o["st"] in ("fresh", "tested") and o["b"] >= lim][-5:],
+            "fvg": [{"t": T(g["i"] - 2), "d": g["d"], "lo": g["lo"], "hi": g["hi"]} for g in A["fvg"] if g["fill"] < 0.7 and g["i"] >= lim][-5:],
+            "liq": [{"k": l["k"], "p": l["p"], "t": T(l["i"]), "st": l["st"]} for l in A["liq"] if l["st"] != "taken"][-4:],
+            "ev": [{"t": e["type"], "d": e["dir"], "lvl": e["lvl"], "a": T(e["from"]), "b": T(e["i"])} for e in A["ev"] if e["i"] >= lim][-6:],
             "pd": A["pd"] and {"hi": A["pd"]["hi"], "lo": A["pd"]["lo"], "eq": A["pd"]["eq"]},
         }
     return {"price": round(price, 2), "mode": mode, "tfs": [tb, tp, te], "bias": bias, "kz": kz, "pd": P["pd"] and {"pos": P["pd"]["pos"]},
-            "days": day_levels(ce), "setups": setups[:4], "charts": charts,
+            "days": day_levels(ce), "ts": ce[-1]["t"], "setups": setups[:4], "charts": charts,
             "last_events": [{"tf": tf, "t": e["type"], "d": e["dir"], "lvl": e["lvl"]} for tf, A in ((tb, B), (tp, P), (te, E)) for e in A["ev"][-2:]]}

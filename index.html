@@ -6,26 +6,33 @@
 <title>تحلیل طلا</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-:root{--bg:#0e1013;--card:#161a1f;--line:#252b33;--tx:#e8eaed;--mut:#8b949e;--gold:#d4af37;--up:#3ecf8e;--dn:#ef5b5b;--bl:#5b9cf5}
+:root{--bg:#0e1013;--card:#161a1f;--line:#252b33;--tx:#e8eaed;--mut:#8b949e;--gold:#d4af37;--up:#26a69a;--dn:#ef5350}
 *{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
-body{background:var(--bg);color:var(--tx);font:14px/1.7 system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;padding:14px 14px 40px;max-width:560px;margin:auto}
-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-h1{font-size:15px;font-weight:600;color:var(--gold);letter-spacing:.3px}
-.price{font:600 26px/1.2 ui-monospace,Menlo,monospace;direction:ltr;text-align:right}
+body{background:var(--bg);color:var(--tx);font:14px/1.7 system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;padding:14px 12px 40px;max-width:640px;margin:auto}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+h1{font-size:15px;font-weight:600;color:var(--gold)}
+.price{font:600 26px/1.2 ui-monospace,Menlo,monospace;direction:ltr;text-align:right;transition:color .25s}
+.price.u{color:var(--up)}.price.d{color:var(--dn)}
+#dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#555;margin-left:6px;vertical-align:middle}#dot.ok{background:var(--up)}#dot.bad{background:var(--dn)}
 .chip{display:inline-block;padding:1px 10px;border-radius:99px;font-size:12px;border:1px solid var(--line);color:var(--mut)}
 .chip.up{color:var(--up);border-color:#1f5a41}.chip.dn{color:var(--dn);border-color:#6a2b2b}
-.seg{display:flex;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:3px;margin:12px 0}
-.seg button{flex:1;background:none;border:0;color:var(--mut);padding:6px;border-radius:8px;font:inherit;cursor:pointer}
+.seg{display:flex;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:3px;margin:10px 0}
+.seg button{flex:1;background:none;border:0;color:var(--mut);padding:6px 2px;border-radius:8px;font:inherit;font-size:12.5px;cursor:pointer}
 .seg button.on{background:#222831;color:var(--tx)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px}
 .card h2{font-size:12px;font-weight:500;color:var(--mut);margin-bottom:8px}
-canvas{width:100%;height:300px;display:block}
-.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--mut);margin-top:6px}
-.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-left:4px;vertical-align:-1px}
+.chart{padding:0;overflow:hidden}
+.cwrap{position:relative;direction:ltr;height:min(60vh,470px);min-height:340px}
+#cv{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair;user-select:none}
+#ohlc{position:absolute;top:5px;left:8px;right:60px;font:10.5px/1.4 ui-monospace,Menlo,monospace;color:var(--mut);pointer-events:none;white-space:nowrap;overflow:hidden}
+#jump{position:absolute;bottom:26px;right:64px;background:#222831;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:2px 10px;font-size:12px;cursor:pointer;display:none}
+.layers{display:flex;gap:6px;padding:8px 10px;direction:ltr;border-top:1px solid var(--line);flex-wrap:wrap}
+.layers b{font:600 11px ui-monospace,monospace;padding:2px 9px;border-radius:99px;border:1px solid var(--line);color:var(--mut);cursor:pointer}
+.layers b.on{color:var(--tx);background:#222831}
+.layers span{margin-left:auto;font-size:10.5px;color:var(--mut)}
 .setup{border-top:1px solid var(--line);padding:10px 0}.setup:first-of-type{border:0;padding-top:0}
 .row{display:flex;align-items:center;gap:8px}
-.grade{font-weight:700;padding:0 8px;border-radius:6px;background:#2a2410;color:var(--gold)}
-.grade.c{background:#222;color:var(--mut)}
+.grade{font-weight:700;padding:0 8px;border-radius:6px;background:#2a2410;color:var(--gold)}.grade.c{background:#222;color:var(--mut)}
 .nums{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:8px 0;direction:ltr;text-align:center;font:12px ui-monospace,Menlo,monospace}
 .nums div{background:#11151a;border-radius:8px;padding:4px 0}.nums small{display:block;color:var(--mut);font-size:10px}
 .why{font-size:12px;color:var(--mut)}
@@ -33,119 +40,232 @@ button.main{width:100%;background:var(--gold);color:#1a1500;border:0;border-radi
 button.main:disabled{opacity:.5}
 .ai{white-space:pre-wrap;font-size:13px}
 .err{color:var(--dn);font-size:12px;margin:6px 0}
-.hist{display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line);font-size:12px;color:var(--mut);cursor:pointer}
-.hist:first-of-type{border:0}
+.hist{display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line);font-size:12px;color:var(--mut);cursor:pointer}.hist:first-of-type{border:0}
 .foot{text-align:center;font-size:11px;color:var(--mut);margin-top:18px}
 </style>
 </head>
 <body>
 <header>
   <div><h1>XAUUSD · تحلیل ساختار</h1><span id="bias" class="chip">…</span> <span id="kz" class="chip" hidden></span></div>
-  <div class="price" id="price">—</div>
+  <div class="price"><i id="dot"></i><span id="price">—</span></div>
 </header>
 
-<div class="seg" id="mode"><button data-m="scalp" class="on">اسکالپ · H4→H1→M15</button><button data-m="swing">سوئینگ · D1→H4→H1</button></div>
+<div class="seg" id="mode">
+  <button data-m="fast">فست · H1→M5→M1</button><button data-m="scalp" class="on">اسکالپ · H4→H1→M15</button><button data-m="swing">سوئینگ · D1→H4→H1</button>
+</div>
 <div class="seg" id="tabs"></div>
 
-<div class="card">
-  <canvas id="cv"></canvas>
-  <div class="legend">
-    <span><i style="background:#3ecf8e88"></i>OB صعودی</span><span><i style="background:#ef5b5b88"></i>OB نزولی</span>
-    <span><i style="background:#5b9cf555"></i>FVG</span><span><i style="background:#d4af37"></i>لیکوییدیتی / تعادل</span>
-  </div>
+<div class="card chart">
+  <div class="cwrap"><canvas id="cv"></canvas><div id="ohlc"></div><button id="jump">⇥ آخرین کندل</button></div>
+  <div class="layers" id="lay"><b data-l="ob" class="on">OB</b><b data-l="fvg" class="on">FVG</b><b data-l="liq" class="on">LIQ</b><b data-l="st" class="on">BOS/CHoCH</b><span id="src"></span></div>
 </div>
 
 <div class="card"><h2>بهترین ستاپ‌ها (امتیاز کانفلوئنس)</h2><div id="setups"></div></div>
-
 <div class="card"><h2>روایت تحلیل</h2><div id="ai" class="ai" style="color:var(--mut)">—</div>
   <button class="main" id="aiBtn" style="margin-top:10px" hidden>تولید روایت با هوش مصنوعی</button></div>
 
 <button class="main" id="go">تحلیل جدید</button>
 <div id="err" class="err"></div>
-
 <div class="card" style="margin-top:14px"><h2>تحلیل‌های قبلی</h2><div id="hist"></div></div>
 <div class="foot">تشخیص‌ها الگوریتمی‌ان و ممکنه چند پیپ با چارت بروکر تو فرق کنن.<br>آموزشی است؛ توصیه‌ی معاملاتی نیست.</div>
 
 <script>
-const tg = window.Telegram && Telegram.WebApp; if (tg) { tg.ready(); tg.expand(); }
+const tg = window.Telegram && Telegram.WebApp; if (tg) { tg.ready(); tg.expand(); try { tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch (e) {} }
 const $ = s => document.querySelector(s);
 const KEY = new URLSearchParams(location.search).get("key") || "";
-const H = () => ({"Content-Type":"application/json","X-Init-Data":tg ? tg.initData : "","X-Admin-Key":KEY});
-async function api(p, m="GET", b) {
-  const r = await fetch("/api/"+p, {method:m, headers:H(), body:b ? JSON.stringify(b) : undefined});
+async function api(p, m = "GET", b) {
+  const r = await fetch("/api/" + p, {method: m, headers: {"Content-Type": "application/json", "X-Init-Data": tg ? tg.initData : "", "X-Admin-Key": KEY}, body: b ? JSON.stringify(b) : undefined});
   const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.status); return j;
 }
-let mode = "scalp", cur = null, tf = null, aid = null, aiOn = false;
+const SEC = {M1: 60, M5: 300, M15: 900, H1: 3600, H4: 14400, D1: 86400}, ROLE = ["بایاس", "ناحیه", "ورود"];
+let mode = "scalp", cur = null, tf = null, aid = null, aiOn = false, loadedTf = null;
 
-function setMode(m) { mode = m; document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === m)); }
-$("#mode").onclick = e => { if (e.target.dataset.m) { setMode(e.target.dataset.m); run(); } };
-$("#tabs").onclick = e => { if (e.target.dataset.t) { tf = e.target.dataset.t; tabs(); draw(); } };
-$("#go").onclick = run; $("#aiBtn").onclick = narrate;
-
-function tabs() {
-  $("#tabs").innerHTML = cur.tfs.map((t, i) => `<button data-t="${t}" class="${t === tf ? "on" : ""}">${t} ${["بایاس","ناحیه","ورود"][i]}</button>`).join("");
+/* ══════════════ موتور چارت زنده (پن/زوم/کراس‌هیر) ══════════════ */
+const cv = $("#cv"), cx = cv.getContext("2d"), AX = 58, AY = 20;
+const UP = "#26a69a", DN = "#ef5350";
+const V = {bw: 7, R: 0, auto: true, y0: 0, y1: 1, mx: 0, my: 0, cross: false};
+let C = [], TS = [], W = 300, Hh = 300, pend = false;
+const layers = {ob: 1, fvg: 1, liq: 1, st: 1};
+const PW = () => W - AX, PH = () => Hh - AY;
+const X = i => PW() - (V.R - i - .5) * V.bw;
+const Y = p => (V.y1 - p) / (V.y1 - V.y0) * PH();
+const invY = y => V.y1 - y / PH() * (V.y1 - V.y0);
+const invX = x => V.R - (PW() - x) / V.bw - .5;
+const tAt = i => i < C.length ? C[Math.max(0, i)][0] : C[C.length - 1][0] + (i - C.length + 1) * SEC[loadedTf];
+const fi = t => { let a = 0, b = TS.length - 1; if (t <= TS[0]) return 0; while (a < b) { const m = (a + b + 1) >> 1; if (TS[m] <= t) a = m; else b = m - 1; } return a; };
+const nice = r => { const e = Math.pow(10, Math.floor(Math.log10(r))), f = r / e; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e; };
+const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], p2 = n => String(n).padStart(2, "0");
+const fmt = (t, full) => { const d = new Date(t * 1000), s = SEC[loadedTf]; const hm = p2(d.getHours()) + ":" + p2(d.getMinutes()), dt = d.getDate() + " " + MON[d.getMonth()];
+  return full ? dt + " " + hm : s >= 86400 ? dt : (d.getHours() === 0 && d.getMinutes() === 0 ? dt : hm); };
+const req = () => { if (!pend) { pend = true; requestAnimationFrame(draw); } };
+const clampR = () => { const lo = PW() * .3 / V.bw, hi = C.length + PW() * .6 / V.bw; V.R = Math.min(hi, Math.max(lo, V.R)); };
+function ensureY() {
+  if (!V.auto) return;
+  const a = Math.max(0, Math.floor(invX(0))), b = Math.min(C.length - 1, Math.ceil(V.R)); let mn = 1e12, mx = -1e12;
+  for (let i = a; i <= b; i++) { if (C[i][3] < mn) mn = C[i][3]; if (C[i][2] > mx) mx = C[i][2]; }
+  if (mn > mx) { mn = C[C.length - 1][3]; mx = C[C.length - 1][2]; }
+  const m = (mx - mn) * .1 || 1; V.y0 = mn - m; V.y1 = mx + m;
 }
-function render(res, id, ai) {
-  cur = res; aid = id; setMode(res.mode); if (!res.tfs.includes(tf)) tf = res.tfs[2];
-  $("#price").textContent = res.price.toFixed(2);
-  const b = $("#bias"); b.className = "chip " + (res.bias > 0 ? "up" : res.bias < 0 ? "dn" : "");
-  b.textContent = (res.bias > 0 ? "صعودی" : res.bias < 0 ? "نزولی" : "نامشخص") + " · " + res.tfs[0];
-  $("#kz").hidden = !res.kz; $("#kz").textContent = "کیلزون " + (res.kz || "");
-  tabs(); draw();
+function resetView() { V.auto = true; V.bw = SEC[loadedTf] <= 300 ? 6 : 8; V.R = C.length + 8; req(); }
+
+function draw() {
+  pend = false; if (!C.length) return;
+  const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  W = w; Hh = h; const x = cx; x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, W, Hh);
+  clampR(); ensureY();
+  const pw = PW(), ph = PH(), bw = V.bw, n = C.length;
+  x.font = "10px ui-monospace,Menlo,monospace"; x.textBaseline = "middle";
+  const step = nice((V.y1 - V.y0) / 6), ticks = []; for (let p = Math.ceil(V.y0 / step) * step; p < V.y1; p += step) ticks.push(p);
+  x.save(); x.beginPath(); x.rect(0, 0, pw, ph); x.clip();
+  x.strokeStyle = "#1c2128"; x.lineWidth = 1; ticks.forEach(p => { const y = Math.round(Y(p)) + .5; x.beginPath(); x.moveTo(0, y); x.lineTo(pw, y); x.stroke(); });
+  const ov = cur && cur.charts && cur.charts[loadedTf], T = v => v > 1e9;
+  const zone = (t, lo, hi, fill, line, label) => {
+    const x0 = X(fi(t)) - bw / 2, y0 = Y(hi), hgt = Math.max(1, Y(lo) - y0); if (x0 > pw) return;
+    x.fillStyle = fill; x.fillRect(x0, y0, pw - x0, hgt); x.strokeStyle = line; x.lineWidth = 1; x.beginPath(); x.moveTo(x0, y0 + .5); x.lineTo(pw, y0 + .5); x.moveTo(x0, y0 + hgt - .5); x.lineTo(pw, y0 + hgt - .5); x.stroke();
+    if (label && hgt > 9) { x.fillStyle = line; x.textAlign = "left"; x.fillText(label, Math.max(x0, 0) + 4, y0 + 7); }
+  };
+  if (ov) {
+    if (layers.fvg) ov.fvg.filter(g => T(g.t)).forEach(g => zone(g.t, g.lo, g.hi, "rgba(91,156,245,.13)", "rgba(91,156,245,.45)", "FVG"));
+    if (layers.ob) ov.ob.filter(o => T(o.t)).forEach(o => zone(o.t, o.lo, o.hi, o.d > 0 ? "rgba(38,166,154,.2)" : "rgba(239,83,80,.2)", o.d > 0 ? "rgba(38,166,154,.8)" : "rgba(239,83,80,.8)", (o.d > 0 ? "OB▲" : "OB▼") + (o.st === "tested" ? " T" : "")));
+    x.setLineDash([5, 4]); x.lineWidth = 1;
+    if (layers.liq) ov.liq.filter(l => T(l.t)).forEach(l => { const x0 = X(fi(l.t)), y = Math.round(Y(l.p)) + .5; x.strokeStyle = x.fillStyle = "#d4af37"; x.beginPath(); x.moveTo(Math.max(0, x0), y); x.lineTo(pw, y); x.stroke(); x.textAlign = "left"; x.fillText((l.k === "H" ? "EQH" : "EQL") + (l.st === "swept" ? " ✕" : ""), Math.max(x0, 0) + 4, y - 6); });
+    if (layers.st) ov.ev.filter(e => T(e.a)).forEach(e => { const a = X(fi(e.a)), b = X(fi(e.b)), y = Math.round(Y(e.lvl)) + .5; if (b < 0 || a > pw) return; x.strokeStyle = x.fillStyle = e.d > 0 ? UP : DN; x.beginPath(); x.moveTo(Math.max(0, a), y); x.lineTo(b, y); x.stroke(); if (b - a > 34) { x.textAlign = "center"; x.fillText(e.t, (Math.max(0, a) + b) / 2, y + (e.d > 0 ? -7 : 8)); } });
+    if (ov.pd) { const y = Math.round(Y(ov.pd.eq)) + .5; x.strokeStyle = x.fillStyle = "#6b7480"; x.beginPath(); x.moveTo(0, y); x.lineTo(pw, y); x.stroke(); x.textAlign = "left"; x.fillText("EQ", 4, y - 6); }
+    x.setLineDash([]);
+  }
+  const a = Math.max(0, Math.floor(invX(0)) - 1), b = Math.min(n - 1, Math.ceil(V.R)), body = Math.max(1, Math.floor(bw * .72));
+  for (let i = a; i <= b; i++) {
+    const k = C[i], col = k[4] >= k[1] ? UP : DN, cxp = Math.round(X(i)) + .5; x.strokeStyle = x.fillStyle = col; x.lineWidth = 1;
+    x.beginPath(); x.moveTo(cxp, Math.round(Y(k[2]))); x.lineTo(cxp, Math.round(Y(k[3]))); x.stroke();
+    if (bw >= 3) { const yo = Math.round(Y(k[1])), yc = Math.round(Y(k[4])); x.fillRect(Math.round(cxp - body / 2), Math.min(yo, yc), body, Math.max(1, Math.abs(yo - yc))); }
+  }
+  const last = C[n - 1][4], yl = Math.round(Y(last)) + .5; x.setLineDash([2, 3]); x.strokeStyle = "#d4af37"; x.beginPath(); x.moveTo(Math.max(0, X(n - 1)), yl); x.lineTo(pw, yl); x.stroke(); x.setLineDash([]);
+  x.restore();
+  /* محورها */
+  x.fillStyle = "#161a1f"; x.fillRect(pw, 0, AX, Hh); x.fillRect(0, ph, W, AY);
+  x.strokeStyle = "#252b33"; x.beginPath(); x.moveTo(pw + .5, 0); x.lineTo(pw + .5, ph + .5); x.lineTo(0, ph + .5); x.stroke();
+  x.fillStyle = "#8b949e"; x.textAlign = "left"; ticks.forEach(p => x.fillText(p.toFixed(step >= 1 ? 0 : step >= .1 ? 1 : 2), pw + 5, Y(p)));
+  const every = Math.max(1, Math.ceil(78 / bw)); x.textAlign = "center";
+  for (let i = Math.ceil(invX(0) / every) * every; i <= V.R; i += every) if (i >= 0) x.fillText(fmt(tAt(i)), X(i), ph + AY / 2 + 1);
+  const tag = (y, txt, bg, fg) => { x.fillStyle = bg; x.fillRect(pw, y - 8, AX, 16); x.fillStyle = fg; x.textAlign = "left"; x.fillText(txt, pw + 5, y); };
+  tag(Y(last), last.toFixed(2), C[n - 1][4] >= C[n - 1][1] ? UP : DN, "#fff");
+  let ci = n - 1;
+  if (V.cross && V.mx < pw && V.my < ph) {
+    ci = Math.max(0, Math.min(n - 1, Math.round(invX(V.mx)))); const cxp = Math.round(V.mx) + .5, cy = Math.round(V.my) + .5;
+    x.setLineDash([3, 3]); x.strokeStyle = "#6b7480"; x.beginPath(); x.moveTo(cxp, 0); x.lineTo(cxp, ph); x.moveTo(0, cy); x.lineTo(pw, cy); x.stroke(); x.setLineDash([]);
+    tag(V.my, invY(V.my).toFixed(2), "#363c46", "#fff");
+    const lab = fmt(tAt(Math.round(invX(V.mx))), true), tw = x.measureText(lab).width + 12; x.fillStyle = "#363c46"; x.fillRect(Math.min(Math.max(0, V.mx - tw / 2), pw - tw), ph + 1, tw, AY - 1); x.fillStyle = "#fff"; x.textAlign = "center"; x.fillText(lab, Math.min(Math.max(tw / 2, V.mx), pw - tw / 2), ph + AY / 2 + 1);
+  }
+  const k = C[ci], chg = (k[4] - k[1]) / k[1] * 100;
+  $("#ohlc").innerHTML = `${fmt(k[0], true)} &nbsp;O <b>${k[1].toFixed(2)}</b> H <b>${k[2].toFixed(2)}</b> L <b>${k[3].toFixed(2)}</b> C <b>${k[4].toFixed(2)}</b> <span style="color:${chg >= 0 ? UP : DN}">${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%</span>`;
+  $("#jump").style.display = (V.R < n - 3 || !V.auto) ? "block" : "none";
+}
+
+/* تعامل: درگ = پن زمان و قیمت · پینچ/چرخ = زوم · درگ روی محور قیمت = زوم عمودی · دابل‌تپ = ریست · لمس طولانی = کراس‌هیر */
+const P = new Map(); let drag = null, pinch = 0, lp = 0, lastTap = 0;
+const pos = e => { const r = cv.getBoundingClientRect(); return {x: e.clientX - r.left, y: e.clientY - r.top}; };
+const dist = () => { const [a, b] = [...P.values()]; return Math.hypot(a.x - b.x, a.y - b.y) || 1; };
+function zoomX(f, ax) { const ia = invX(ax); V.bw = Math.min(40, Math.max(1.5, V.bw * f)); V.R = ia + .5 + (PW() - ax) / V.bw; req(); }
+cv.addEventListener("pointerdown", e => {
+  if (!C.length) return; cv.setPointerCapture(e.pointerId); const p = pos(e); P.set(e.pointerId, p);
+  if (P.size === 2) { pinch = dist(); drag = null; clearTimeout(lp); return; }
+  drag = {x: p.x, y: p.y, R: V.R, y0: V.y0, y1: V.y1, axis: p.x > PW(), moved: false, cross: false};
+  if (e.pointerType !== "mouse") lp = setTimeout(() => { if (drag && !drag.moved) { drag.cross = V.cross = true; V.mx = p.x; V.my = p.y; navigator.vibrate && navigator.vibrate(8); req(); } }, 380);
+});
+cv.addEventListener("pointermove", e => {
+  const p = pos(e); if (P.has(e.pointerId)) P.set(e.pointerId, p);
+  if (P.size === 2) { const d = dist(), c = [...P.values()]; zoomX(d / pinch, (c[0].x + c[1].x) / 2); pinch = d; return; }
+  if (!drag) { if (e.pointerType === "mouse") { V.cross = true; V.mx = p.x; V.my = p.y; req(); } return; }
+  const dx = p.x - drag.x, dy = p.y - drag.y;
+  if (drag.cross) { V.mx = p.x; V.my = p.y; req(); return; }
+  if (!drag.moved && Math.hypot(dx, dy) > 5) { drag.moved = true; clearTimeout(lp); if (e.pointerType === "mouse") V.cross = false; }
+  if (!drag.moved) return;
+  if (drag.axis) { const f = Math.exp(dy / 140), c = (drag.y0 + drag.y1) / 2, h = (drag.y1 - drag.y0) / 2 * f; V.auto = false; V.y0 = c - h; V.y1 = c + h; }
+  else { V.R = drag.R - dx / V.bw; if (!V.auto || Math.abs(dy) > 16) { V.auto = false; const s = dy / PH() * (drag.y1 - drag.y0); V.y0 = drag.y0 + s; V.y1 = drag.y1 + s; } }
+  req();
+});
+const up = e => { P.delete(e.pointerId); if (P.size < 2) pinch = 0; if (!P.size) { clearTimeout(lp);
+  if (drag && !drag.moved && !drag.cross && Date.now() - lastTap < 300) resetView(); if (drag && !drag.moved) lastTap = Date.now();
+  if (e.pointerType !== "mouse") V.cross = false; drag = null; req(); } };
+cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+cv.addEventListener("pointerleave", e => { if (e.pointerType === "mouse") { V.cross = false; req(); } });
+cv.addEventListener("wheel", e => { e.preventDefault(); zoomX(e.deltaY < 0 ? 1.12 : 1 / 1.12, pos(e).x); }, {passive: false});
+$("#jump").onclick = resetView;
+new ResizeObserver(req).observe(cv);
+
+/* ══════════════ دیتا: بارگذاری + آپدیت زنده ══════════════ */
+const setDot = c => $("#dot").className = c;
+function setPrice() {
+  const p = C[C.length - 1][4], el = $("#price"), old = parseFloat(el.textContent);
+  el.textContent = p.toFixed(2); if (old && old !== p) { el.className = p > old ? "u" : "d"; setTimeout(() => el.className = "", 350); }
+}
+async function loadTF(t) {
+  const j = await api(`candles?tf=${t}&limit=1500`); if (t !== tf) return;
+  C = j.c; TS = C.map(k => k[0]); loadedTf = t; $("#src").textContent = j.src || ""; setPrice(); resetView(); setDot("ok");
+}
+let busy = false;
+async function poll() {
+  if (document.hidden || !C.length || busy || loadedTf !== tf) return; busy = true; const t0 = tf;
+  try {
+    const j = await api(`candles?tf=${t0}&since=${C[Math.max(0, C.length - 3)][0]}`); if (t0 !== tf) return;
+    const atEnd = V.R >= C.length - .5; let pushed = 0;
+    for (const k of j.c) { let i = C.length - 1; while (i >= 0 && C[i][0] > k[0]) i--; if (i >= 0 && C[i][0] === k[0]) C[i] = k; else if (i === C.length - 1) { C.push(k); TS.push(k[0]); pushed++; } }
+    if (atEnd && pushed) V.R += pushed;
+    setPrice(); setDot("ok"); req();
+  } catch (e) { setDot("bad"); }
+  busy = false;
+}
+setInterval(poll, 2500);
+
+/* ══════════════ UI و تحلیل ══════════════ */
+function setMode(m) { mode = m; document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === m)); }
+function tabs() { $("#tabs").innerHTML = cur.tfs.map((t, i) => `<button data-t="${t}" class="${t === tf ? "on" : ""}">${t} ${ROLE[i]}</button>`).join(""); }
+$("#mode").onclick = e => { if (e.target.dataset.m) { setMode(e.target.dataset.m); tf = null; run(); } };
+$("#tabs").onclick = e => { const t = e.target.dataset.t; if (t && t !== tf) { tf = t; tabs(); loadTF(t).catch(x => $("#err").textContent = x.message); } };
+$("#lay").onclick = e => { const l = e.target.dataset.l; if (l) { layers[l] ^= 1; e.target.classList.toggle("on", !!layers[l]); req(); } };
+$("#go").onclick = () => run(); $("#aiBtn").onclick = narrate;
+
+function setups(res) {
   $("#setups").innerHTML = res.setups.length ? res.setups.map(s => `<div class="setup">
     <div class="row"><span class="grade ${s.grade === "C" ? "c" : ""}">${s.grade}</span><b style="color:var(--${s.d > 0 ? "up" : "dn"})">${s.d > 0 ? "خرید" : "فروش"}</b>
     <span style="color:var(--mut);font-size:12px">OB ${s.tf} · ${s.lo}–${s.hi}${s.inzone ? " · داخل ناحیه" : ""}</span></div>
     <div class="nums"><div><small>ENTRY</small>${s.entry}</div><div><small>SL</small>${s.sl}</div><div><small>TP</small>${s.tp ?? "—"}</div><div><small>RR</small>${s.rr ?? "—"}</div></div>
     <div class="why">${s.why.join(" · ") || "—"}</div></div>`).join("") : '<div class="why">ستاپ معتبری الان نیست.</div>';
-  $("#ai").textContent = ai || "—"; $("#ai").style.color = ai ? "var(--tx)" : "var(--mut)";
-  $("#aiBtn").hidden = !aiOn || !!ai;
 }
-function draw() {
-  const ch = cur.charts[tf], cv = $("#cv"), dpr = devicePixelRatio || 1;
-  const W = cv.clientWidth, Hh = cv.clientHeight; cv.width = W * dpr; cv.height = Hh * dpr;
-  const x = cv.getContext("2d"); x.scale(dpr, dpr); x.clearRect(0, 0, W, Hh);
-  const c = ch.c, n = c.length, padR = 52, padT = 8, padB = 8, cw = (W - padR) / n;
-  let hi = Math.max(...c.map(k => k[2])), lo = Math.min(...c.map(k => k[3]));
-  const m = (hi - lo) * .06; hi += m; lo -= m;
-  const Y = p => padT + (hi - p) / (hi - lo) * (Hh - padT - padB), X = i => i * cw + cw / 2;
-  x.font = "10px ui-monospace,monospace"; x.textBaseline = "middle";
-  x.strokeStyle = "#1d2229"; x.fillStyle = "#6b7480"; x.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) { const p = lo + (hi - lo) * i / 4, y = Y(p); x.beginPath(); x.moveTo(0, y); x.lineTo(W - padR, y); x.stroke(); x.fillText(p.toFixed(1), W - padR + 4, y); }
-  const zone = (i, a, b, col) => { x.fillStyle = col; x.fillRect(X(i), Y(b), W - padR - X(i), Y(a) - Y(b)); };
-  ch.fvg.forEach(g => zone(g.i, g.lo, g.hi, "#5b9cf533"));
-  ch.ob.forEach(o => { zone(o.i, o.lo, o.hi, o.d > 0 ? "#3ecf8e40" : "#ef5b5b40"); x.fillStyle = o.d > 0 ? "#3ecf8e" : "#ef5b5b"; x.fillText("OB" + (o.st === "tested" ? " ·T" : ""), X(o.i) + 2, Y(o.hi) - 6); });
-  x.setLineDash([4, 4]); x.lineWidth = 1;
-  const line = (p, col, label, from = 0) => { x.strokeStyle = col; x.fillStyle = col; x.beginPath(); x.moveTo(X(from), Y(p)); x.lineTo(W - padR, Y(p)); x.stroke(); if (label) x.fillText(label, X(from) + 2, Y(p) - 6); };
-  ch.liq.forEach(l => line(l.p, "#d4af37", (l.k === "H" ? "EQH" : "EQL") + (l.st === "swept" ? " ✕" : ""), l.i));
-  if (ch.pd) line(ch.pd.eq, "#8b949e", "EQ");
-  ch.ev.forEach(e => { if (e.lvl >= lo && e.lvl <= hi) { x.strokeStyle = x.fillStyle = e.d > 0 ? "#3ecf8e" : "#ef5b5b"; x.beginPath(); x.moveTo(X(Math.max(0, e.a)), Y(e.lvl)); x.lineTo(X(e.b), Y(e.lvl)); x.stroke(); x.fillText(e.t, X((Math.max(0, e.a) + e.b) / 2) - 10, Y(e.lvl) + (e.d > 0 ? -7 : 8)); } });
-  x.setLineDash([]);
-  c.forEach((k, i) => {
-    const up = k[4] >= k[1], col = up ? "#3ecf8e" : "#ef5b5b"; x.strokeStyle = x.fillStyle = col;
-    x.beginPath(); x.moveTo(X(i), Y(k[2])); x.lineTo(X(i), Y(k[3])); x.stroke();
-    x.fillRect(X(i) - cw * .32, Math.min(Y(k[1]), Y(k[4])), cw * .64, Math.max(1, Math.abs(Y(k[1]) - Y(k[4]))));
-  });
-  const last = c[n - 1][4]; x.fillStyle = "#d4af37"; x.fillRect(W - padR, Y(last) - 8, padR, 16); x.fillStyle = "#1a1500"; x.fillText(last.toFixed(1), W - padR + 4, Y(last));
+function head(res) {
+  const b = $("#bias"); b.className = "chip " + (res.bias > 0 ? "up" : res.bias < 0 ? "dn" : "");
+  b.textContent = (res.bias > 0 ? "صعودی" : res.bias < 0 ? "نزولی" : "نامشخص") + " · " + res.tfs[0];
+  $("#kz").hidden = !res.kz; $("#kz").textContent = "کیلزون " + (res.kz || "");
+}
+async function render(res, id, ai) {
+  cur = res; aid = id; setMode(res.mode); if (!res.tfs.includes(tf)) tf = res.tfs[2];
+  head(res); tabs(); setups(res);
+  $("#ai").textContent = ai || "—"; $("#ai").style.color = ai ? "var(--tx)" : "var(--mut)"; $("#aiBtn").hidden = !aiOn || !!ai || !id;
+  if (loadedTf !== tf || !C.length) await loadTF(tf); else req();
 }
 async function run() {
   $("#go").disabled = true; $("#err").textContent = ""; $("#go").textContent = "در حال تحلیل…";
-  try { const j = await api("analyze", "POST", {mode}); render(j.res, j.id, null); loadHist(); }
+  try { const j = await api("analyze", "POST", {mode}); await render(j.res, j.id, null); loadHist(); }
   catch (e) { $("#err").textContent = e.message; }
   $("#go").disabled = false; $("#go").textContent = "تحلیل جدید";
 }
+setInterval(async () => {                      // رفرش خودکار اوورلی‌ها و ستاپ‌ها (ذخیره نمی‌شه)
+  if (document.hidden || !cur || !cur.mode) return;
+  try { const j = await api("analyze", "POST", {mode: cur.mode, live: true}); if (j.res.mode === mode) { cur = j.res; head(cur); setups(cur); req(); } } catch (e) {}
+}, 60000);
 async function narrate() {
   $("#aiBtn").disabled = true; $("#aiBtn").textContent = "در حال نوشتن…";
   try { const j = await api(`analyses/${aid}/narrate`, "POST"); $("#ai").textContent = j.text; $("#ai").style.color = "var(--tx)"; $("#aiBtn").hidden = true; }
   catch (e) { $("#err").textContent = e.message; }
   $("#aiBtn").disabled = false; $("#aiBtn").textContent = "تولید روایت با هوش مصنوعی";
 }
-async function openOld(id) { try { const j = await api("analyses/" + id); render(j.res, id, j.ai); scrollTo({top: 0, behavior: "smooth"}); } catch (e) { $("#err").textContent = e.message; } }
-function loadHist(list) {
+async function openOld(id) { try { const j = await api("analyses/" + id); await render(j.res, id, j.ai); scrollTo({top: 0, behavior: "smooth"}); } catch (e) { $("#err").textContent = e.message; } }
+function loadHist() {
   api("me").then(j => { aiOn = j.ai; $("#hist").innerHTML = j.history.map(h => `<div class="hist" onclick="openOld('${h.id}')">
-    <span>${new Date(h.t).toLocaleString("fa-IR", {dateStyle: "short", timeStyle: "short"})} · ${h.mode === "scalp" ? "اسکالپ" : "سوئینگ"}</span>
+    <span>${new Date(h.t).toLocaleString("fa-IR", {dateStyle: "short", timeStyle: "short"})} · ${{fast: "فست", scalp: "اسکالپ", swing: "سوئینگ"}[h.mode] || h.mode}</span>
     <span style="direction:ltr">${h.price} ${h.grade ? "· " + h.grade : ""}</span></div>`).join("") || '<div class="why">هنوز تحلیلی نداری.</div>'; }).catch(() => {});
 }
-addEventListener("resize", () => cur && draw());
 api("me").then(j => { aiOn = j.ai; setMode(j.mode); run(); }).catch(e => $("#err").textContent = e.message);
 </script>
 </body>
