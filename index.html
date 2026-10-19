@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>تحلیل طلا</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.6/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 :root{--bg:#0e1013;--card:#161a1f;--line:#252b33;--tx:#e8eaed;--mut:#8b949e;--gold:#d4af37;--up:#26a69a;--dn:#ef5350}
 *{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
@@ -23,13 +24,14 @@ h1{font-size:15px;font-weight:600;color:var(--gold)}
 .card h2{font-size:12px;font-weight:500;color:var(--mut);margin-bottom:8px}
 .chart{padding:0;overflow:hidden}
 .cwrap{position:relative;direction:ltr;height:min(60vh,470px);min-height:340px}
-#cv{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair;user-select:none}
-#ohlc{position:absolute;top:4px;left:6px;width:fit-content;max-width:calc(100% - 68px);background:rgba(22,26,31,.78);padding:1px 6px;border-radius:6px;font:10px/1.35 ui-monospace,Menlo,monospace;color:var(--mut);pointer-events:none}#ohlc b{color:var(--tx);font-weight:500}
-#jump{position:absolute;bottom:26px;right:64px;background:#222831;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:2px 10px;font-size:12px;cursor:pointer;display:none}
+#cv{position:absolute;inset:0}
+#ohlc{position:absolute;z-index:3;top:4px;left:6px;width:fit-content;max-width:calc(100% - 68px);background:rgba(22,26,31,.78);padding:1px 6px;border-radius:6px;font:10px/1.35 ui-monospace,Menlo,monospace;color:var(--mut);pointer-events:none}#ohlc b{color:var(--tx);font-weight:500}
+#jump{position:absolute;z-index:3;bottom:26px;right:64px;background:#222831;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:2px 10px;font-size:12px;cursor:pointer;display:none}
 .layers{display:flex;gap:6px;padding:8px 10px;direction:ltr;border-top:1px solid var(--line);flex-wrap:wrap}
 .layers b{font:600 11px ui-monospace,monospace;padding:2px 9px;border-radius:99px;border:1px solid var(--line);color:var(--mut);cursor:pointer}
 .layers b.on{color:var(--gold);background:#2a2410;border-color:#5a4a14}
-.layers span{margin-left:auto;font-size:10.5px;color:var(--mut)}
+.layers select{background:#161a1f;color:var(--mut);border:1px solid var(--line);border-radius:99px;font:600 11px ui-monospace,monospace;padding:1px 6px;margin-left:auto}
+.layers span{font-size:10.5px;color:var(--mut)}
 .setup{border-top:1px solid var(--line);padding:10px 0}.setup:first-of-type{border:0;padding-top:0}
 .row{display:flex;align-items:center;gap:8px}
 .grade{font-weight:700;padding:0 8px;border-radius:6px;background:#2a2410;color:var(--gold)}.grade.c{background:#222;color:var(--mut)}
@@ -56,8 +58,8 @@ button.main:disabled{opacity:.5}
 <div class="seg" id="tabs"></div>
 
 <div class="card chart">
-  <div class="cwrap"><canvas id="cv"></canvas><div id="ohlc"></div><button id="jump">⇥ آخرین کندل</button></div>
-  <div class="layers" id="lay"><b data-l="ob" class="on">OB</b><b data-l="fvg" class="on">FVG</b><b data-l="liq" class="on">LIQ</b><b data-l="st" class="on">BOS/CHoCH</b><span id="src"></span></div>
+  <div class="cwrap"><div id="cv"></div><div id="ohlc"></div><button id="jump">⇥ آخرین کندل</button></div>
+  <div class="layers" id="lay"><b data-l="ob" class="on">OB</b><b data-l="fvg" class="on">FVG</b><b data-l="liq" class="on">LIQ</b><b data-l="st" class="on">BOS/CHoCH</b><select id="tz"><option value="UTC">UTC</option><option value="Asia/Tehran">Tehran</option><option value="America/New_York">New York</option><option value="Europe/London">London</option><option value="">Local</option></select><span id="src"></span></div>
 </div>
 
 <div class="card"><h2>بهترین ستاپ‌ها (امتیاز کانفلوئنس)</h2><div id="setups"></div></div>
@@ -80,130 +82,82 @@ async function api(p, m = "GET", b) {
 const SEC = {M1: 60, M5: 300, M15: 900, H1: 3600, H4: 14400, D1: 86400}, ROLE = ["بایاس", "ناحیه", "ورود"];
 let mode = "scalp", cur = null, tf = null, aid = null, aiOn = false, loadedTf = null, loadedSrc = null;
 
-/* ══════════════ موتور چارت زنده (پن/زوم/کراس‌هیر) ══════════════ */
-const cv = $("#cv"), cx = cv.getContext("2d"), AX = 58, AY = 20;
-const UP = "#26a69a", DN = "#ef5350";
-const V = {bw: 7, R: 0, auto: true, y0: 0, y1: 1, mx: 0, my: 0, cross: false};
-let C = [], TS = [], W = 300, Hh = 300, pend = false;
-const layers = {ob: 1, fvg: 1, liq: 1, st: 1};
-const PW = () => W - AX, PH = () => Hh - AY;
-const X = i => PW() - (V.R - i - .5) * V.bw;
-const Y = p => (V.y1 - p) / (V.y1 - V.y0) * PH();
-const invY = y => V.y1 - y / PH() * (V.y1 - V.y0);
-const invX = x => V.R - (PW() - x) / V.bw - .5;
-const tAt = i => i < C.length ? C[Math.max(0, i)][0] : C[C.length - 1][0] + (i - C.length + 1) * SEC[loadedTf];
-const fi = t => { let a = 0, b = TS.length - 1; if (t <= TS[0]) return 0; while (a < b) { const m = (a + b + 1) >> 1; if (TS[m] <= t) a = m; else b = m - 1; } return a; };
-const nice = r => { const e = Math.pow(10, Math.floor(Math.log10(r))), f = r / e; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e; };
-const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], p2 = n => String(n).padStart(2, "0");
-const fmt = (t, full) => { const d = new Date(t * 1000), s = SEC[loadedTf]; const hm = p2(d.getHours()) + ":" + p2(d.getMinutes()), dt = d.getDate() + " " + MON[d.getMonth()];
-  return full ? dt + " " + hm : s >= 86400 ? dt : (d.getHours() === 0 && d.getMinutes() === 0 ? dt : hm); };
-const req = () => { if (!pend) { pend = true; requestAnimationFrame(draw); } };
-const clampR = () => { const lo = PW() * .3 / V.bw, hi = C.length + PW() * .6 / V.bw; V.R = Math.min(hi, Math.max(lo, V.R)); };
-function ensureY() {
-  if (!V.auto) return;
-  const a = Math.max(0, Math.floor(invX(0))), b = Math.min(C.length - 1, Math.ceil(V.R)); let mn = 1e12, mx = -1e12;
-  for (let i = a; i <= b; i++) { if (C[i][3] < mn) mn = C[i][3]; if (C[i][2] > mx) mx = C[i][2]; }
-  if (mn > mx) { mn = C[C.length - 1][3]; mx = C[C.length - 1][2]; }
-  const m = (mx - mn) * .1 || 1; V.y0 = mn - m; V.y1 = mx + m;
+/* ══════════════ موتور چارت: TradingView Lightweight Charts + اوورلی SMC ══════════════ */
+const LW = LightweightCharts, UP = "#26a69a", DN = "#ef5350";
+let C = [], TZ = "Asia/Tehran"; try { TZ = localStorage.getItem("tz") ?? TZ; } catch (e) {}
+const layers = {ob: 1, fvg: 1, liq: 1, st: 1}, p2 = n => String(n).padStart(2, "0");
+const fdt = (t, o) => new Intl.DateTimeFormat("en-GB", {timeZone: TZ || undefined, hour12: false, ...o}).format(new Date(t * 1000));
+const fmt = (t, full) => fdt(t, full ? {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"} : {hour: "2-digit", minute: "2-digit"});
+const chart = LW.createChart($("#cv"), {
+  autoSize: true,
+  layout: {background: {type: "solid", color: "#161a1f"}, textColor: "#8b949e", fontSize: 11, fontFamily: "ui-monospace,Menlo,monospace"},
+  grid: {vertLines: {color: "#1c2128"}, horzLines: {color: "#1c2128"}},
+  crosshair: {mode: 0, vertLine: {color: "#6b7480", labelBackgroundColor: "#363c46"}, horzLine: {color: "#6b7480", labelBackgroundColor: "#363c46"}},
+  rightPriceScale: {borderColor: "#252b33", scaleMargins: {top: .1, bottom: .1}},
+  timeScale: {borderColor: "#252b33", timeVisible: true, secondsVisible: false, rightOffset: 8, barSpacing: 8, minBarSpacing: 1.5},
+  handleScroll: {vertTouchDrag: false}, kineticScroll: {touch: true, mouse: false}
+});
+const series = chart.addSeries(LW.CandlestickSeries, {upColor: UP, downColor: DN, borderUpColor: UP, borderDownColor: DN, wickUpColor: UP, wickDownColor: DN,
+  priceFormat: {type: "price", precision: 2, minMove: .01}, priceLineColor: "#d4af37"});
+function tzOpts() {
+  chart.applyOptions({localization: {timeFormatter: t => fmt(t, true)},
+    timeScale: {tickMarkFormatter: (t, ty) => ty >= 3 ? fmt(t) : ty === 2 ? fdt(t, {day: "numeric", month: "short"}) : ty === 1 ? fdt(t, {month: "short"}) : fdt(t, {year: "numeric"})}});
 }
-function resetView() { V.auto = true; V.bw = SEC[loadedTf] <= 300 ? 6 : 8; V.R = C.length + 8; req(); }
+$("#tz").value = TZ; $("#tz").onchange = e => { TZ = e.target.value; try { localStorage.setItem("tz", TZ); } catch (x) {} tzOpts(); legend(); };
+tzOpts();
 
-function draw() {
-  pend = false; if (!C.length) return;
-  const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
-  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
-  W = w; Hh = h; const x = cx; x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, W, Hh);
-  clampR(); ensureY();
-  const pw = PW(), ph = PH(), bw = V.bw, n = C.length;
-  x.font = "10px ui-monospace,Menlo,monospace"; x.textBaseline = "middle";
-  const step = nice((V.y1 - V.y0) / 6), ticks = []; for (let p = Math.ceil(V.y0 / step) * step; p < V.y1; p += step) ticks.push(p);
-  x.save(); x.beginPath(); x.rect(0, 0, pw, ph); x.clip();
-  x.strokeStyle = "#1c2128"; x.lineWidth = 1; ticks.forEach(p => { const y = Math.round(Y(p)) + .5; x.beginPath(); x.moveTo(0, y); x.lineTo(pw, y); x.stroke(); });
-  const ov = cur && cur.charts && cur.charts[loadedTf], T = v => v > 1e9, used = [];
-  const lab = (txt, y, dir, col) => { for (let k = 0; k < 8 && used.some(u => Math.abs(u - y) < 11); k++) y += dir * 11; used.push(y); x.fillStyle = col; x.textAlign = "right"; x.fillText(txt, pw - 4, y); };
-  const zone = (t, lo, hi, fill, line, label) => {
-    const x0 = X(fi(t)) - bw / 2, y0 = Y(hi), hgt = Math.max(1, Y(lo) - y0); if (x0 > pw) return;
-    x.fillStyle = fill; x.fillRect(x0, y0, pw - x0, hgt); x.strokeStyle = line; x.lineWidth = 1; x.beginPath(); x.moveTo(x0, y0 + .5); x.lineTo(pw, y0 + .5); x.moveTo(x0, y0 + hgt - .5); x.lineTo(pw, y0 + hgt - .5); x.stroke();
-    if (label && hgt > 11) lab(label, y0 + 7, 1, line);
-  };
-  if (ov) {
-    if (layers.fvg) ov.fvg.filter(g => T(g.t)).slice(-3).forEach(g => zone(g.t, g.lo, g.hi, "rgba(91,156,245,.13)", "rgba(91,156,245,.45)", "FVG"));
-    if (layers.ob) ov.ob.filter(o => T(o.t)).forEach(o => zone(o.t, o.lo, o.hi, o.d > 0 ? "rgba(38,166,154,.2)" : "rgba(239,83,80,.2)", o.d > 0 ? "rgba(38,166,154,.8)" : "rgba(239,83,80,.8)", (o.d > 0 ? "OB▲" : "OB▼") + (o.st === "tested" ? " T" : "")));
-    x.setLineDash([5, 4]); x.lineWidth = 1;
-    if (layers.liq) ov.liq.filter(l => T(l.t) && l.st !== "swept").forEach(l => { const x0 = X(fi(l.t)), y = Math.round(Y(l.p)) + .5; x.strokeStyle = x.fillStyle = "#d4af37"; x.beginPath(); x.moveTo(Math.max(0, x0), y); x.lineTo(pw, y); x.stroke(); lab(l.k === "H" ? "EQH" : "EQL", y - 6, -1, "#d4af37"); });
-    if (layers.st) ov.ev.filter(e => T(e.a)).forEach(e => { const a = X(fi(e.a)), b = X(fi(e.b)), y = Math.round(Y(e.lvl)) + .5; if (b < 0 || a > pw || b - a < 20) return; x.strokeStyle = x.fillStyle = e.d > 0 ? UP : DN; x.beginPath(); x.moveTo(Math.max(0, a), y); x.lineTo(b, y); x.stroke(); if (b - a > 34) { x.textAlign = "center"; x.fillText(e.t, (Math.max(0, a) + b) / 2, y + (e.d > 0 ? -7 : 8)); } });
-    if (ov.pd) { const y = Math.round(Y(ov.pd.eq)) + .5; x.strokeStyle = x.fillStyle = "#6b7480"; x.beginPath(); x.moveTo(0, y); x.lineTo(pw, y); x.stroke(); lab("EQ", y - 6, -1, "#6b7480"); }
-    x.setLineDash([]);
+/* اوورلی OB / FVG / لیکوییدیتی / BOS-CHoCH: روی خود چارت (بر پایه‌ی زمان و قیمت) کشیده می‌شه، پس با پن و زوم دقیقاً می‌چسبه */
+class Overlay {
+  attached(p) { this.req = p.requestUpdate; }
+  updateAllViews() {}
+  paneViews() { return [{zOrder: () => "bottom", renderer: () => ({draw: t => this.draw(t)})}]; }
+  draw(target) {
+    target.useBitmapCoordinateSpace(({context: x, mediaSize: ms, horizontalPixelRatio: hr, verticalPixelRatio: vr}) => {
+      const ov = cur && cur.charts && cur.charts[loadedTf]; if (!ov || !C.length) return;
+      const ts = chart.timeScale(), bs = ts.options().barSpacing, W = ms.width, used = [], t0 = C[0][0], T = v => v > 1e9;
+      const Y = p => series.priceToCoordinate(p), XT = t => { const v = ts.timeToCoordinate(t); return v == null ? (t < t0 ? -20 : null) : v; };
+      x.save(); x.scale(hr, vr); x.font = "10px ui-monospace,Menlo,monospace"; x.textBaseline = "middle"; x.lineWidth = 1;
+      const lab = (txt, y, dir, col) => { for (let k = 0; k < 8 && used.some(u => Math.abs(u - y) < 11); k++) y += dir * 11; used.push(y); x.fillStyle = col; x.textAlign = "right"; x.fillText(txt, W - 4, y); };
+      const line = (xa, xb, y, col) => { x.strokeStyle = col; x.beginPath(); x.moveTo(xa, y); x.lineTo(xb, y); x.stroke(); };
+      const zone = (t, lo, hi, fill, ln, label) => {
+        const xa = XT(t), y0 = Y(hi), y1 = Y(lo); if (xa == null || y0 == null || y1 == null) return;
+        const x0 = xa - bs / 2, h = Math.max(1, y1 - y0); if (x0 > W) return;
+        x.fillStyle = fill; x.fillRect(x0, y0, W - x0, h); line(x0, W, y0, ln); line(x0, W, y0 + h, ln); if (label && h > 11) lab(label, y0 + 7, 1, ln);
+      };
+      if (layers.fvg) ov.fvg.filter(g => T(g.t)).slice(-3).forEach(g => zone(g.t, g.lo, g.hi, "rgba(91,156,245,.13)", "rgba(91,156,245,.45)", "FVG"));
+      if (layers.ob) ov.ob.filter(o => T(o.t)).forEach(o => zone(o.t, o.lo, o.hi, o.d > 0 ? "rgba(38,166,154,.2)" : "rgba(239,83,80,.2)", o.d > 0 ? "rgba(38,166,154,.8)" : "rgba(239,83,80,.8)", (o.d > 0 ? "OB▲" : "OB▼") + (o.st === "tested" ? " T" : "")));
+      x.setLineDash([5, 4]);
+      if (layers.liq) ov.liq.filter(l => T(l.t) && l.st !== "swept").forEach(l => { const xa = XT(l.t), y = Y(l.p); if (xa == null || y == null) return; line(Math.max(0, xa), W, y, "#d4af37"); lab(l.k === "H" ? "EQH" : "EQL", y - 6, -1, "#d4af37"); });
+      if (layers.st) ov.ev.filter(e => T(e.a)).forEach(e => {
+        const xa = XT(e.a), xb = XT(e.b), y = Y(e.lvl); if (xa == null || xb == null || y == null || xb < 0 || xa > W || xb - xa < 20) return;
+        const col = e.d > 0 ? UP : DN; line(Math.max(0, xa), xb, y, col);
+        if (xb - xa > 34) { x.fillStyle = col; x.textAlign = "center"; x.fillText(e.t, (Math.max(0, xa) + xb) / 2, y + (e.d > 0 ? -7 : 8)); }
+      });
+      if (ov.pd) { const y = Y(ov.pd.eq); if (y != null) { line(0, W, y, "#6b7480"); lab("EQ", y - 6, -1, "#6b7480"); } }
+      x.restore();
+    });
   }
-  const a = Math.max(0, Math.floor(invX(0)) - 1), b = Math.min(n - 1, Math.ceil(V.R));
-  x.save(); x.setTransform(1, 0, 0, 1, 0, 0);                      // رسم کندل‌ها روی پیکسل فیزیکی: بدنه و شدو دقیق و تیز
-  const odd = v => v | 1, ww = odd(Math.max(1, Math.round(dpr))), bd = odd(Math.max(1, Math.floor(bw * dpr * .74))), minH = Math.max(1, Math.round(dpr));
-  for (let i = a; i <= b; i++) {
-    const k = C[i]; x.fillStyle = k[4] >= k[1] ? UP : DN;
-    const c = Math.round(X(i) * dpr), yh = Math.round(Y(k[2]) * dpr), yl = Math.round(Y(k[3]) * dpr);
-    x.fillRect(c - (ww - 1) / 2, yh, ww, Math.max(minH, yl - yh));
-    if (bw * dpr >= 3) { const yo = Math.round(Y(k[1]) * dpr), yc = Math.round(Y(k[4]) * dpr); x.fillRect(c - (bd - 1) / 2, Math.min(yo, yc), bd, Math.max(minH, Math.abs(yo - yc))); }
-  }
-  x.restore();
-  const last = C[n - 1][4], yl = Math.round(Y(last)) + .5; x.setLineDash([2, 3]); x.strokeStyle = "#d4af37"; x.beginPath(); x.moveTo(Math.max(0, X(n - 1)), yl); x.lineTo(pw, yl); x.stroke(); x.setLineDash([]);
-  x.restore();
-  /* محورها */
-  x.fillStyle = "#161a1f"; x.fillRect(pw, 0, AX, Hh); x.fillRect(0, ph, W, AY);
-  x.strokeStyle = "#252b33"; x.beginPath(); x.moveTo(pw + .5, 0); x.lineTo(pw + .5, ph + .5); x.lineTo(0, ph + .5); x.stroke();
-  x.fillStyle = "#8b949e"; x.textAlign = "left"; ticks.forEach(p => x.fillText(p.toFixed(step >= 1 ? 0 : step >= .1 ? 1 : 2), pw + 5, Y(p)));
-  const TI = [60, 300, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 432000, 604800, 1209600, 2592000], sec = SEC[loadedTf];
-  const iv = TI.find(v => v >= 62 / bw * sec) || TI[TI.length - 1], off = -new Date().getTimezoneOffset() * 60; let lastX = -1e9; x.textAlign = "center";
-  for (let i = Math.max(1, Math.floor(invX(0))); i <= Math.ceil(V.R); i++) {            // لیبل روی مرز «ساعت/روز گرد»، نه ایندکس ثابت
-    const t = tAt(i); if (Math.floor((t + off) / iv) === Math.floor((tAt(i - 1) + off) / iv)) continue;
-    const px = X(i); if (px < 16 || px > pw - 16 || px - lastX < 54) continue; lastX = px;
-    const d = new Date(t * 1000), day = iv >= 86400 || (d.getHours() === 0 && d.getMinutes() === 0);
-    x.fillStyle = day ? "#c9d1d9" : "#8b949e"; x.fillText(day ? d.getDate() + " " + MON[d.getMonth()] : p2(d.getHours()) + ":" + p2(d.getMinutes()), px, ph + AY / 2 + 1);
-  }
-  const tag = (y, txt, bg, fg) => { x.fillStyle = bg; x.fillRect(pw, y - 8, AX, 16); x.fillStyle = fg; x.textAlign = "left"; x.fillText(txt, pw + 5, y); };
-  tag(Y(last), last.toFixed(2), C[n - 1][4] >= C[n - 1][1] ? UP : DN, "#fff");
-  let ci = n - 1;
-  if (V.cross && V.mx < pw && V.my < ph) {
-    ci = Math.max(0, Math.min(n - 1, Math.round(invX(V.mx)))); const cxp = Math.round(V.mx) + .5, cy = Math.round(V.my) + .5;
-    x.setLineDash([3, 3]); x.strokeStyle = "#6b7480"; x.beginPath(); x.moveTo(cxp, 0); x.lineTo(cxp, ph); x.moveTo(0, cy); x.lineTo(pw, cy); x.stroke(); x.setLineDash([]);
-    tag(V.my, invY(V.my).toFixed(2), "#363c46", "#fff");
-    const lab = fmt(tAt(Math.round(invX(V.mx))), true), tw = x.measureText(lab).width + 12; x.fillStyle = "#363c46"; x.fillRect(Math.min(Math.max(0, V.mx - tw / 2), pw - tw), ph + 1, tw, AY - 1); x.fillStyle = "#fff"; x.textAlign = "center"; x.fillText(lab, Math.min(Math.max(tw / 2, V.mx), pw - tw / 2), ph + AY / 2 + 1);
-  }
-  const k = C[ci], chg = (k[4] - k[1]) / k[1] * 100;
+}
+const ovl = new Overlay(); series.attachPrimitive(ovl);
+const req = () => ovl.req && ovl.req();
+
+const bar = k => ({time: k[0], open: k[1], high: k[2], low: k[3], close: k[4]});
+function legend(k) {
+  k = k || C[C.length - 1]; if (!k) return; const chg = (k[4] - k[1]) / k[1] * 100;
   $("#ohlc").innerHTML = `${fmt(k[0], true)} &nbsp;O <b>${k[1].toFixed(2)}</b> H <b>${k[2].toFixed(2)}</b> L <b>${k[3].toFixed(2)}</b> C <b>${k[4].toFixed(2)}</b> <span style="color:${chg >= 0 ? UP : DN}">${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%</span>`;
-  $("#jump").style.display = (V.R < n - 3 || !V.auto) ? "block" : "none";
 }
-
-/* تعامل: درگ = پن زمان و قیمت · پینچ/چرخ = زوم · درگ روی محور قیمت = زوم عمودی · دابل‌تپ = ریست · لمس طولانی = کراس‌هیر */
-const P = new Map(); let drag = null, pinch = 0, lp = 0, lastTap = 0;
-const pos = e => { const r = cv.getBoundingClientRect(); return {x: e.clientX - r.left, y: e.clientY - r.top}; };
-const dist = () => { const [a, b] = [...P.values()]; return Math.hypot(a.x - b.x, a.y - b.y) || 1; };
-function zoomX(f, ax) { const ia = invX(ax); V.bw = Math.min(30, Math.max(1.5, V.bw * f)); V.R = ia + .5 + (PW() - ax) / V.bw; req(); }
-cv.addEventListener("pointerdown", e => {
-  if (!C.length) return; cv.setPointerCapture(e.pointerId); const p = pos(e); P.set(e.pointerId, p);
-  if (P.size === 2) { pinch = dist(); drag = null; clearTimeout(lp); return; }
-  drag = {x: p.x, y: p.y, R: V.R, y0: V.y0, y1: V.y1, axis: p.x > PW(), moved: false, cross: false};
-  if (e.pointerType !== "mouse") lp = setTimeout(() => { if (drag && !drag.moved) { drag.cross = V.cross = true; V.mx = p.x; V.my = p.y; navigator.vibrate && navigator.vibrate(8); req(); } }, 380);
-});
-cv.addEventListener("pointermove", e => {
-  const p = pos(e); if (P.has(e.pointerId)) P.set(e.pointerId, p);
-  if (P.size === 2) { const d = dist(), c = [...P.values()]; zoomX(d / pinch, (c[0].x + c[1].x) / 2); pinch = d; return; }
-  if (!drag) { if (e.pointerType === "mouse") { V.cross = true; V.mx = p.x; V.my = p.y; req(); } return; }
-  const dx = p.x - drag.x, dy = p.y - drag.y;
-  if (drag.cross) { V.mx = p.x; V.my = p.y; req(); return; }
-  if (!drag.moved && Math.hypot(dx, dy) > 5) { drag.moved = true; clearTimeout(lp); if (e.pointerType === "mouse") V.cross = false; }
-  if (!drag.moved) return;
-  if (drag.axis) { const f = Math.exp(dy / 140), c = (drag.y0 + drag.y1) / 2, h = (drag.y1 - drag.y0) / 2 * f; V.auto = false; V.y0 = c - h; V.y1 = c + h; }
-  else { V.R = drag.R - dx / V.bw; if (!V.auto || Math.abs(dy) > 16) { V.auto = false; const s = dy / PH() * (drag.y1 - drag.y0); V.y0 = drag.y0 + s; V.y1 = drag.y1 + s; } }
-  req();
-});
-const up = e => { P.delete(e.pointerId); if (P.size < 2) pinch = 0; if (!P.size) { clearTimeout(lp);
-  if (drag && !drag.moved && !drag.cross && Date.now() - lastTap < 300) resetView(); if (drag && !drag.moved) lastTap = Date.now();
-  if (e.pointerType !== "mouse") V.cross = false; drag = null; req(); } };
-cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
-cv.addEventListener("pointerleave", e => { if (e.pointerType === "mouse") { V.cross = false; req(); } });
-cv.addEventListener("wheel", e => { e.preventDefault(); zoomX(e.deltaY < 0 ? 1.12 : 1 / 1.12, pos(e).x); }, {passive: false});
+chart.subscribeCrosshairMove(p => { const d = p.time && p.seriesData.get(series); legend(d ? [p.time, d.open, d.high, d.low, d.close] : null); });
+chart.timeScale().subscribeVisibleLogicalRangeChange(r => { $("#jump").style.display = r && C.length && r.to < C.length - 3 ? "block" : "none"; });
+function feed() { C = C.filter((k, i) => !i || k[0] > C[i - 1][0]); series.setData(C.map(bar)); legend(); }
+function tick(k) {                              // آپدیت زنده‌ی کندل آخر / کندل جدید؛ بدون دست زدن به بقیه
+  const n = C.length - 1; if (n < 0 || k[0] < C[n][0]) return;
+  if (k[0] === C[n][0]) C[n] = k; else C.push(k); series.update(bar(k)); legend();
+}
+function resetView() {
+  chart.priceScale("right").applyOptions({autoScale: true});
+  chart.timeScale().applyOptions({barSpacing: SEC[loadedTf] <= 300 ? 7 : 9}); chart.timeScale().scrollToPosition(8, false);
+}
 $("#jump").onclick = resetView;
-new ResizeObserver(req).observe(cv);
 
 /* ══════════════ دیتا: بارگذاری + آپدیت زنده ══════════════ */
 const setDot = c => $("#dot").className = c;
@@ -213,11 +167,11 @@ function setPrice() {
 }
 async function loadTF(t) {
   const j = await api(`candles?tf=${t}&limit=2500`); if (t !== tf) return;
-  C = j.c; TS = C.map(k => k[0]); loadedTf = t; loadedSrc = j.src; srcLabel(j); setPrice(); resetView(); setDot("ok");
+  C = j.c; loadedTf = t; loadedSrc = j.src; srcLabel(j); feed(); setPrice(); resetView(); setDot("ok");
 }
 function srcLabel(j) {
   const stale = j.age != null && !j.closed && j.age > 4 * SEC[loadedTf] + 120;
-  $("#src").textContent = (["dukascopy", "oanda", "twelve"].includes(j.src) ? "" : "⚠ ") + (j.src || "") + (stale ? " · ⚠ " + Math.round(j.age / 60) + "د عقب" : "");
+  $("#src").textContent = (["dukascopy", "oanda", "twelve"].includes(j.src) ? "" : "⚠ ") + (j.src || "") + (stale ? " · ⚠ " + Math.round(j.age / 60) + "د عقب" : "") + (j.cr != null ? " · " + j.cr + "/800" : "");
 }
 let busy = false;
 async function poll() {
@@ -226,9 +180,7 @@ async function poll() {
     const j = await api(`candles?tf=${t0}&since=${C[Math.max(0, C.length - 90)][0]}`); if (t0 !== tf) return;
     if (j.src !== loadedSrc) { loadedSrc = j.src; await loadTF(t0); busy = false; return; }   // منبع عوض شده ← قیمت‌ها هم‌سطح نیستن، کل دیتا رو دوباره بگیر
     srcLabel(j);
-    const atEnd = V.R >= C.length - .5; let pushed = 0;
-    for (const k of j.c) { let i = C.length - 1; while (i >= 0 && C[i][0] > k[0]) i--; if (i >= 0 && C[i][0] === k[0]) C[i] = k; else if (i === C.length - 1) { C.push(k); TS.push(k[0]); pushed++; } }
-    if (atEnd && pushed) V.R += pushed;
+    j.c.forEach(tick);
     setPrice(); setDot("ok"); req();
   } catch (e) { setDot("bad"); }
   busy = false;

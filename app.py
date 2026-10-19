@@ -38,7 +38,8 @@ AI_BASE_URL = re.sub(r"/chat/completions/?$", "", os.environ.get("AI_BASE_URL", 
 AI_API_KEY, AI_MODEL = os.environ.get("AI_API_KEY", ""), os.environ.get("AI_MODEL", "")
 AI_ON = bool(AI_BASE_URL and AI_API_KEY and AI_MODEL)
 TD_KEY = os.environ.get("TD_API_KEY", "").strip()
-TD_TTL = int(os.environ.get("TD_TTL", "20"))
+TD_TTL = int(os.environ.get("TD_TTL", "3"))
+TD_DAY_MAX = int(os.environ.get("TD_DAY_MAX", "720"))     # سقف امن روزانه؛ حد رایگان Twelve Data = ۸۰۰ کردیت/روز و ۸ در دقیقه
 SYMBOL = os.environ.get("DATA_SYMBOL", "GC=F")
 WEBHOOK_SECRET = hashlib.sha256(("gs" + SECRET_KEY).encode()).hexdigest()[:32]
 
@@ -284,15 +285,34 @@ def _binance(tf):
     raise err
 
 
-_td = {}
+_TD = {"lock": threading.Lock(), "calls": [], "day": "", "n": 0, "m1": [], "hist": {}, "last": 0.0}
+
+
+def _td_credit():
+    """نگهبان سهمیه: حداکثر ۷ درخواست در دقیقه و TD_DAY_MAX در روز (UTC)."""
+    t = time.time()
+    day = time.strftime("%Y-%m-%d", time.gmtime(t))
+    if _TD["day"] != day:
+        _TD["day"], _TD["n"] = day, 0
+    _TD["calls"] = [x for x in _TD["calls"] if t - x < 60]
+    if len(_TD["calls"]) >= 7 or _TD["n"] >= TD_DAY_MAX:
+        return False
+    _TD["calls"].append(t)
+    _TD["n"] += 1
+    return True
 
 
 def _td_get(tf, n):
-    r = HTTP.get("https://api.twelvedata.com/time_series", params={"symbol": "XAU/USD", "interval": TF_TD[tf], "outputsize": n,
+    if not _td_credit():
+        raise RuntimeError("Twelve Data: سهمیه‌ی رایگان تموم شد/محدود شد")
+    r = HTTP.get("https://api.twelvedata.com/time_series", params={"symbol": "XAU/USD", "interval": TF_TD[tf], "outputsize": min(n, 5000),
                                                                    "apikey": TD_KEY, "timezone": "UTC"}, timeout=15)
-    v = r.json().get("values")
+    j = r.json()
+    v = j.get("values")
     if not v:
-        raise RuntimeError("Twelve Data: " + str(r.json())[:200])
+        if j.get("code") == 429:
+            _TD["n"] = TD_DAY_MAX
+        raise RuntimeError("Twelve Data: " + str(j)[:200])
     out = []
     for x in reversed(v):
         dt = datetime.strptime(x["datetime"][:19], "%Y-%m-%d %H:%M:%S" if len(x["datetime"]) > 10 else "%Y-%m-%d")
@@ -300,18 +320,56 @@ def _td_get(tf, n):
     return out
 
 
+def _td_sync():
+    """معماری کم‌مصرف (≈۵ کردیت برای شروع + یک کردیت هر ~۱۵ ثانیه فقط وقتی کسی چارت رو می‌بینه):
+    ۱) M1 = تنها منبع حقیقت برای لحظه‌ی اخیر؛ فقط «دم» اون آپدیت می‌شه و جاافتادگی‌ها با همون یک درخواست پر می‌شن.
+    ۲) M5/M15/H1 = تاریخچه‌ی عمیق (هر ۶ ساعت یک‌بار) + کندل‌های ساخته‌شده از M1 روی دنباله ← هم‌ریشه و بدون درز.
+    ۳) H4/D1 از H1 با شروع روز ۱۷:۰۰ نیویورک ساخته می‌شن (مثل TradingView/بروکرها)."""
+    with _TD["lock"]:
+        t = time.time()
+        if not _TD["m1"]:
+            _TD["m1"] = _td_get("M1", 5000)
+            _TD["last"] = t
+        for tf in ("H1", "M15", "M5"):
+            h = _TD["hist"].get(tf)
+            if not h or t - h[0] > 21600:
+                try:
+                    _TD["hist"][tf] = (t, _td_get(tf, 5000))
+                except Exception as e:
+                    if not h:
+                        log.warning("td hist %s: %s", tf, str(e)[:100])
+        gap = 15 if _TD["n"] < TD_DAY_MAX * .75 else 60
+        if t - _TD["last"] >= gap and not (_closed(t) and _TD["m1"][-1]["t"] > t - 86400 * 2.5):
+            m1 = _TD["m1"]
+            need = int((t - m1[-1]["t"]) // 60) + 3
+            try:
+                if need > 4900:
+                    _TD["m1"] = _td_get("M1", 5000)
+                else:
+                    d = {x["t"]: x for x in m1}
+                    d.update({x["t"]: x for x in _td_get("M1", max(5, need))})
+                    _TD["m1"] = [d[k] for k in sorted(d)][-6000:]
+                _TD["last"] = t
+            except Exception as e:
+                _TD["last"] = t - gap + 5          # خطا → ۵ ثانیه‌ی دیگه دوباره، نه هر درخواست
+                log.info("td tail: %s", str(e)[:100])
+
+
+def _td_merge(tf):
+    step, m1 = TF_SEC[tf], _TD["m1"]
+    d = {x["t"]: x for x in (_TD["hist"].get(tf) or (0, []))[1]}
+    cut = -(-m1[0]["t"] // step) * step                  # اولین باکتِ کامل M1
+    d.update({x["t"]: x for x in _resample(m1, step) if x["t"] >= cut})
+    return [d[k] for k in sorted(d)]
+
+
 def _twelve(tf):
-    """هر درخواست ۱ کردیت می‌خوره (رایگان: ۸ در دقیقه / ۸۰۰ در روز). پس تاریخچه هر ۱۵ دقیقه یک‌بار؛ بین‌اش فقط ۳ کندل آخر."""
-    st = _td.get(tf)
-    if st and time.time() - st[0] < 900:
-        d = {x["t"]: x for x in st[1]}
-        d.update({x["t"]: x for x in _td_get(tf, 3)})
-        out = [d[k] for k in sorted(d)][-2500:]
-        _td[tf] = (st[0], out)
-    else:
-        out = _td_get(tf, 2000)
-        _td[tf] = (time.time(), out)
-    return out
+    _td_sync()
+    if tf == "M1":
+        return _TD["m1"][-2500:]
+    if tf in ("M5", "M15", "H1"):
+        return _td_merge(tf)[-2500:]
+    return _ny_resample(_td_merge("H1"), TF_SEC[tf])[1:][-2500:]      # [1:] = باکت اول ناقصه
 
 
 def _yahoo(tf, sym):
@@ -526,7 +584,7 @@ def api_candles(uid):
     since = request.args.get("since", type=int)
     c = [x for x in c if x["t"] >= since] if since else c[-min(request.args.get("limit", 1500, type=int), 3000):]
     age = int(time.time() - c[-1]["t"]) if c else None
-    return jsonify(tf=tf, src=SRC_USED.get(tf), age=age, closed=_closed(time.time()), c=[[x["t"], x["o"], x["h"], x["l"], x["c"]] for x in c])
+    return jsonify(tf=tf, src=SRC_USED.get(tf), age=age, cr=_TD["n"] if SRC_USED.get(tf) == "twelve" else None, closed=_closed(time.time()), c=[[x["t"], x["o"], x["h"], x["l"], x["c"]] for x in c])
 
 
 @app.post("/api/analyze")
